@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  bottelegram:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bottelegram
+    restart: unless-stopped
+    volumes:
+      - bottelegram_data:/app/data
+    env_file:
+      - .env
+
+volumes:
+  bottelegram_data:
+    name: bottelegram_data

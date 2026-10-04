@@ -1,0 +1,60 @@
+{
+  "tenants": {
+    "jaguares": {
+      "id": "jaguares",
+      "name": "Escuela Deportiva Jaguares",
+      "plan": "premium",
+      "status": "active",
+      "createdAt": "2026-10-04T17:35:44.312Z"
+    }
+  },
+  "memberships": {
+    "954433345": {
+      "telegramUserId": 954433345,
+      "tenantId": "jaguares",
+      "role": "owner",
+      "firstName": "Cm",
+      "linkedAt": "2026-10-04T18:52:28.126Z",
+      "status": "active"
+    },
+    "8998445878": {
+      "telegramUserId": 8998445878,
+      "tenantId": "jaguares",
+      "role": "owner",
+      "firstName": "Pupi",
+      "linkedAt": "2026-10-04T19:03:55.517Z",
+      "status": "active"
+    }
+  },
+  "activationCodes": {
+    "ACT-JAG-B6DYR": {
+      "code": "ACT-JAG-B6DYR",
+      "tenantId": "jaguares",
+      "role": "owner",
+      "description": "Invitación para Escuela Deportiva Jaguares",
+      "expiresAt": "2026-10-11T17:41:16.353Z",
+      "isConsumed": false
+    },
+    "ACT-JAG-27XG9": {
+      "code": "ACT-JAG-27XG9",
+      "tenantId": "jaguares",
+      "role": "owner",
+      "description": "Creado desde bot por admin",
+      "expiresAt": "2026-10-11T18:42:05.888Z",
+      "isConsumed": false
+    },
+    "ACT-JAG-TEFQL": {
+      "code": "ACT-JAG-TEFQL",
+      "tenantId": "jaguares",
+      "role": "owner",
+      "description": "Creado desde bot por admin",
+      "expiresAt": "2026-10-11T19:02:48.590Z",
+      "isConsumed": true,
+      "consumedBy": 8998445878,
+      "consumedAt": "2026-10-04T19:03:55.517Z"
+    }
+  },
+  "superadminIds": [
+    954433345
+  ]
+}

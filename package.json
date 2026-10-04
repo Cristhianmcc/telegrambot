@@ -1,0 +1,40 @@
+{
+  "name": "bottelegram",
+  "version": "1.0.0",
+  "description": "Bot Empresarial de Telegram multi-tenant y read-only para Monterrial POS y Escuela Jaguares",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "client:create": "tsx src/cli/manage-clients.ts create",
+    "client:list": "tsx src/cli/manage-clients.ts list",
+    "client:revoke": "tsx src/cli/manage-clients.ts revoke"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "grammy": "^1.34.0",
+    "luxon": "^3.5.0",
+    "mysql2": "^3.12.0",
+    "openai": "^7.27.0",
+    "pino": "^9.6.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/luxon": "^3.4.2",
+    "@types/node": "^22.13.1",
+    "pino-pretty": "^13.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  },
+  "keywords": [
+    "telegram-bot",
+    "bi",
+    "jaguares",
+    "pos"
+  ],
+  "author": "",
+  "license": "ISC"
+}
