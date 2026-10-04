@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard } from 'grammy';
+import { Bot, InlineKeyboard, InputFile } from 'grammy';
 import { routeMessage } from '../pipeline/rule-router.js';
 import { routeMessageWithLLM } from '../llm/llm-router.js';
 import { jaguaresService } from '../connectors/jaguares/jaguares-service.js';
@@ -17,6 +17,35 @@ import { resolvePeriod } from '../date-resolver/date-resolver.js';
 import { getChatHistory, addChatMessage, clearChatHistory } from './conversation-memory.js';
 import { accessStore } from '../auth/access-store.js';
 import { registerAdminPanel } from './admin-panel.js';
+import {
+  generateDebtorsExcelBuffer,
+  generateStudentsExcelBuffer,
+  generateCapacityExcelBuffer
+} from '../reporting/excel-generator.js';
+import { sendDailyDigestToUser } from '../scheduler/daily-digest.js';
+
+export const BOT_SLASH_COMMANDS = [
+  { command: 'menu', description: '📋 Menú interactivo principal' },
+  { command: 'resumen', description: '🎓 Resumen ejecutivo de la escuela' },
+  { command: 'alumnos', description: '👥 Alumnos activos y por disciplina' },
+  { command: 'ingresos', description: '💰 Ingresos cobrados en el mes' },
+  { command: 'deudas', description: '📋 Balance de cobranzas y pendientes' },
+  { command: 'deudores', description: '⏳ Lista de alumnos con mensualidad pendiente' },
+  { command: 'cupos', description: '🏟️ Estado de cupos y horarios' },
+  { command: 'excel', description: '📊 Descargar reportes en Excel (.xlsx)' },
+  { command: 'notificaciones', description: '⏰ Configurar reporte automático diario' },
+  { command: 'ayuda', description: '❓ Ejemplos de consultas y guía' },
+  { command: 'admin', description: '👑 Panel de administración comercial' }
+];
+
+export async function registerBotSlashCommands(bot: Bot): Promise<void> {
+  try {
+    await bot.api.setMyCommands(BOT_SLASH_COMMANDS);
+    console.log('✅ Comandos Slash (/) registrados exitosamente en Telegram.');
+  } catch (err: any) {
+    console.warn('⚠️ No se pudieron registrar comandos slash en Telegram:', err.message);
+  }
+}
 
 export function createBot(token: string): Bot {
   const bot = new Bot(token);
@@ -33,7 +62,51 @@ export function createBot(token: string): Bot {
       .text('📋 Deudas y Cobranzas', 'action_debt')
       .row()
       .text('⏳ Quiénes Deben', 'action_debtors')
-      .text('🏟️ Cupos y Horarios', 'action_capacity');
+      .text('🏟️ Cupos y Horarios', 'action_capacity')
+      .row()
+      .text('📊 Reportes Excel (.xlsx)', 'excel_menu')
+      .text('⏰ Alertas y Reporte Diario', 'notif_menu');
+  }
+
+  function getExcelKeyboard(): InlineKeyboard {
+    return new InlineKeyboard()
+      .text('📑 Deudores (.xlsx)', 'excel_dl_debtors')
+      .text('👥 Padrón Alumnos (.xlsx)', 'excel_dl_students')
+      .row()
+      .text('🏟️ Horarios y Cupos (.xlsx)', 'excel_dl_capacity')
+      .row()
+      .text('🔙 Volver al Menú', 'action_back_menu');
+  }
+
+  function getNotificationsView(userId: number): { text: string; keyboard: InlineKeyboard } {
+    const membership = accessStore.getMembership(userId);
+    const isEnabled = membership?.dailyDigestEnabled ?? false;
+    const hour = membership?.digestHour || '08:00';
+
+    const statusText = isEnabled
+      ? `✅ <b>Activado</b> (se envía todos los días a las <b>${hour}</b> hora Perú)`
+      : `❌ <b>Desactivado</b>`;
+
+    const message =
+      `⏰ <b>Configuración de Reporte Automático (Daily Digest)</b>\n\n` +
+      `Recibe un resumen ejecutivo automático diario con alumnos, cobros y cobranzas pendientes directo en tu chat sin tener que pedirlo.\n\n` +
+      `📌 <b>Estado actual:</b> ${statusText}\n\n` +
+      `👇 Elige el horario que prefieras para recibirlo o pruébalo ahora:`;
+
+    const kb = new InlineKeyboard()
+      .text(hour === '07:00' && isEnabled ? '🔘 07:00 AM' : '⚪ 07:00 AM', 'notif_set_07:00')
+      .text(hour === '08:00' && isEnabled ? '🔘 08:00 AM' : '⚪ 08:00 AM', 'notif_set_08:00')
+      .text(hour === '09:00' && isEnabled ? '🔘 09:00 AM' : '⚪ 09:00 AM', 'notif_set_09:00')
+      .row()
+      .text(hour === '14:00' && isEnabled ? '🔘 02:00 PM' : '⚪ 02:00 PM', 'notif_set_14:00')
+      .text(hour === '20:00' && isEnabled ? '🔘 08:00 PM' : '⚪ 08:00 PM', 'notif_set_20:00')
+      .row()
+      .text('🔕 Desactivar', 'notif_disable')
+      .text('🚀 Probar envío ahora', 'notif_test_now')
+      .row()
+      .text('🔙 Volver al Menú', 'action_back_menu');
+
+    return { text: message, keyboard: kb };
   }
 
   // 🔒 Middleware de autorización comercial (Multi-tenant Guard)
@@ -155,13 +228,13 @@ export function createBot(token: string): Bot {
 
     const text =
       `👋 ¡Hola ${from.first_name}! Bienvenido a tu <b>Asistente de Gestión · ${tenantName}</b>.\n\n` +
-      `Puedes consultarme métricas, alumnos, ingresos y cobranzas en lenguaje natural.\n\n` +
+      `Puedes consultarme métricas, alumnos, ingresos y cobranzas en lenguaje natural o usando los comandos <b>/</b>.\n\n` +
       `📌 <b>Ejemplos de preguntas:</b>\n` +
       `• <i>"¿Cómo está la escuela?"</i>\n` +
       `• <i>"¿Cuántos alumnos tenemos?"</i>\n` +
       `• <i>"¿Cuánto hemos cobrado este mes?"</i>\n` +
       `• <i>"¿Quiénes deben este mes?"</i>\n` +
-      `• <i>"¿Cómo están los cupos?"</i>\n\n` +
+      `• <i>"Envíame la lista en Excel"</i>\n\n` +
       `👇 O usa los botones directos del menú:`;
 
     await ctx.reply(text, {
@@ -225,33 +298,114 @@ export function createBot(token: string): Bot {
     });
   });
 
+  // /resumen
+  bot.command('resumen', async (ctx) => {
+    try {
+      const period = resolvePeriod('este mes');
+      const data = await jaguaresService.getOverview(period);
+      await ctx.reply(renderOverview(data, period.label), { parse_mode: 'HTML' });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar resumen: ${err.message}`);
+    }
+  });
+
+  // /alumnos
+  bot.command('alumnos', async (ctx) => {
+    try {
+      const data = await jaguaresService.getStudentCounts();
+      await ctx.reply(renderStudentCounts(data), { parse_mode: 'HTML' });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar alumnos: ${err.message}`);
+    }
+  });
+
+  // /ingresos
+  bot.command('ingresos', async (ctx) => {
+    try {
+      const period = resolvePeriod('este mes');
+      const data = await jaguaresService.getIncomeSummary(period);
+      await ctx.reply(renderIncomeSummary(data), { parse_mode: 'HTML' });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar ingresos: ${err.message}`);
+    }
+  });
+
+  // /deudas
+  bot.command('deudas', async (ctx) => {
+    try {
+      const period = resolvePeriod('este mes');
+      const data = await jaguaresService.getDebtSummary(period);
+      await ctx.reply(renderDebtSummary(data), { parse_mode: 'HTML' });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar deudas: ${err.message}`);
+    }
+  });
+
+  // /deudores
+  bot.command('deudores', async (ctx) => {
+    try {
+      const period = resolvePeriod('este mes');
+      const data = await jaguaresService.getPendingDebtors(period, 10);
+      await ctx.reply(renderPendingDebtors(data, period.label), { parse_mode: 'HTML' });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar lista de deudores: ${err.message}`);
+    }
+  });
+
+  // /cupos
+  bot.command('cupos', async (ctx) => {
+    try {
+      const data = await jaguaresService.getCapacity();
+      await ctx.reply(renderCapacity(data), { parse_mode: 'HTML' });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar cupos: ${err.message}`);
+    }
+  });
+
+  // /excel
+  bot.command('excel', async (ctx) => {
+    await ctx.reply('📊 <b>Centro de Descargas en Excel (.xlsx)</b>\n\nSelecciona el reporte que deseas exportar:', {
+      parse_mode: 'HTML',
+      reply_markup: getExcelKeyboard()
+    });
+  });
+
+  // /notificaciones
+  bot.command('notificaciones', async (ctx) => {
+    const userId = ctx.from?.id;
+    if (!userId) return;
+    const view = getNotificationsView(userId);
+    await ctx.reply(view.text, {
+      parse_mode: 'HTML',
+      reply_markup: view.keyboard
+    });
+  });
+
   // /ayuda
   bot.command(['ayuda', 'help'], async (ctx) => {
     const helpText =
       `ℹ️ <b>Guía de Consultas para Escuela Jaguares</b>\n\n` +
-      `Puedes escribirme de forma natural como hablar con un asistente. Respondo sobre:\n\n` +
+      `Puedes escribir de forma natural o usar la barra <b>/</b> para ver todos los comandos directos:\n\n` +
       `🎓 <b>Resumen Ejecutivo:</b>\n` +
-      `• <i>"¿Cómo va la escuela?"</i>\n` +
-      `• <i>"resumen del mes"</i>\n\n` +
+      `• <code>/resumen</code> o <i>"¿Cómo va la escuela?"</i>\n\n` +
       `👥 <b>Alumnos y Disciplinas:</b>\n` +
-      `• <i>"¿Cuántos alumnos activos tenemos?"</i>\n` +
-      `• <i>"¿Cuántos alumnos hay en fútbol / vóley / básquet?"</i>\n` +
-      `• <i>"¿Cuántos alumnos nuevos entraron este mes?"</i>\n\n` +
+      `• <code>/alumnos</code> o <i>"¿Cuántos alumnos hay en fútbol?"</i>\n\n` +
       `💰 <b>Finanzas e Ingresos:</b>\n` +
-      `• <i>"¿Cuánto dinero hemos cobrado este mes?"</i>\n` +
-      `• <i>"¿Cuánto cobramos en septiembre?"</i>\n\n` +
-      `📋 <b>Deudas y Pagos Pendientes (pagos_mensuales):</b>\n` +
-      `• <i>"¿Cuánto nos deben?"</i>\n` +
-      `• <i>"¿Cuánto falta por cobrar?"</i>\n` +
-      `• <i>"¿Quiénes deben este mes?"</i>\n\n` +
-      `🏟️ <b>Cupos y Capacidad:</b>\n` +
-      `• <i>"¿Cómo están los cupos de fútbol?"</i>\n` +
-      `• <i>"¿Qué horarios tienen cupos disponibles?"</i>`;
+      `• <code>/ingresos</code> o <i>"¿Cuánto dinero hemos cobrado este mes?"</i>\n\n` +
+      `📋 <b>Deudas y Cobranzas:</b>\n` +
+      `• <code>/deudas</code> o <i>"¿Cuánto falta por cobrar?"</i>\n` +
+      `• <code>/deudores</code> o <i>"¿Quiénes deben este mes?"</i>\n\n` +
+      `🏟️ <b>Cupos y Horarios:</b>\n` +
+      `• <code>/cupos</code> o <i>"¿Cómo están los cupos de fútbol?"</i>\n\n` +
+      `📊 <b>Archivos Excel:</b>\n` +
+      `• <code>/excel</code> o <i>"Envíame la lista en Excel"</i>\n\n` +
+      `⏰ <b>Reporte Matutino Automático:</b>\n` +
+      `• <code>/notificaciones</code> para programar la hora de tu reporte diario.`;
 
     await ctx.reply(helpText, { parse_mode: 'HTML' });
   });
 
-  // Callbacks de los botones del menú
+  // --- CALLBACKS DEL MENÚ PRINCIPAL ---
   bot.callbackQuery('action_overview', async (ctx) => {
     await ctx.answerCallbackQuery();
     try {
@@ -316,11 +470,167 @@ export function createBot(token: string): Bot {
     }
   });
 
+  bot.callbackQuery('action_back_menu', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText('📋 <b>Menú de Consultas Rápidas</b>', {
+      parse_mode: 'HTML',
+      reply_markup: getMainKeyboard()
+    });
+  });
+
+  // --- CALLBACKS DE EXCEL ---
+  bot.callbackQuery('excel_menu', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply('📊 <b>Centro de Descargas en Excel (.xlsx)</b>\n\nSelecciona el reporte que deseas exportar:', {
+      parse_mode: 'HTML',
+      reply_markup: getExcelKeyboard()
+    });
+  });
+
+  bot.callbackQuery('excel_dl_debtors', async (ctx) => {
+    await ctx.answerCallbackQuery({ text: '⏳ Generando Excel de deudores...' });
+    try {
+      const buffer = await generateDebtorsExcelBuffer('este mes');
+      await ctx.replyWithDocument(new InputFile(buffer, 'Deudores_Jaguares.xlsx'), {
+        caption: '📑 <b>Reporte Oficial de Deudores de Mensualidad</b>\nGenerado en tiempo real desde la base de datos.',
+        parse_mode: 'HTML'
+      });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error generando Excel: ${err.message}`);
+    }
+  });
+
+  bot.callbackQuery('excel_dl_students', async (ctx) => {
+    await ctx.answerCallbackQuery({ text: '⏳ Generando padrón de alumnos...' });
+    try {
+      const buffer = await generateStudentsExcelBuffer();
+      await ctx.replyWithDocument(new InputFile(buffer, 'Padron_Alumnos_Jaguares.xlsx'), {
+        caption: '👥 <b>Padrón General de Alumnos Inscritos</b>\nGenerado en tiempo real desde la base de datos.',
+        parse_mode: 'HTML'
+      });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error generando Excel: ${err.message}`);
+    }
+  });
+
+  bot.callbackQuery('excel_dl_capacity', async (ctx) => {
+    await ctx.answerCallbackQuery({ text: '⏳ Generando reporte de cupos...' });
+    try {
+      const buffer = await generateCapacityExcelBuffer();
+      await ctx.replyWithDocument(new InputFile(buffer, 'Horarios_Cupos_Jaguares.xlsx'), {
+        caption: '🏟️ <b>Estado y Capacidad de Horarios</b>\nGenerado en tiempo real desde la base de datos.',
+        parse_mode: 'HTML'
+      });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error generando Excel: ${err.message}`);
+    }
+  });
+
+  // --- CALLBACKS DE NOTIFICACIONES / REPORTES AUTOMÁTICOS ---
+  bot.callbackQuery('notif_menu', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const userId = ctx.from.id;
+    const view = getNotificationsView(userId);
+    await ctx.reply(view.text, {
+      parse_mode: 'HTML',
+      reply_markup: view.keyboard
+    });
+  });
+
+  bot.callbackQuery(/^notif_set_(\d\d:\d\d)$/, async (ctx) => {
+    const hour = ctx.match[1];
+    const userId = ctx.from.id;
+    accessStore.updateDigestSettings(userId, true, hour);
+    await ctx.answerCallbackQuery({ text: `✅ Reporte configurado para las ${hour}` });
+    const view = getNotificationsView(userId);
+    await ctx.editMessageText(view.text, {
+      parse_mode: 'HTML',
+      reply_markup: view.keyboard
+    });
+  });
+
+  bot.callbackQuery('notif_disable', async (ctx) => {
+    const userId = ctx.from.id;
+    accessStore.updateDigestSettings(userId, false);
+    await ctx.answerCallbackQuery({ text: '🔕 Reportes automáticos desactivados' });
+    const view = getNotificationsView(userId);
+    await ctx.editMessageText(view.text, {
+      parse_mode: 'HTML',
+      reply_markup: view.keyboard
+    });
+  });
+
+  bot.callbackQuery('notif_test_now', async (ctx) => {
+    await ctx.answerCallbackQuery({ text: '🚀 Generando reporte de prueba...' });
+    try {
+      await sendDailyDigestToUser(bot, ctx.from.id);
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al generar reporte de prueba: ${err.message}`);
+    }
+  });
+
   // Mensajes de texto libres en lenguaje natural
   bot.on('message:text', async (ctx) => {
     const rawText = ctx.message.text;
     const chatId = ctx.chat.id;
     const history = getChatHistory(chatId);
+
+    const norm = rawText.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+    // Atajo directo si pide Excel en texto libre: "dame el excel", "envíame los deudores en excel", "archivo excel"
+    if (norm.includes('excel') || norm.includes('xlsx')) {
+      if (norm.includes('deud') || norm.includes('pag') || norm.includes('cobran')) {
+        await ctx.reply('⏳ Generando archivo Excel de deudores...');
+        try {
+          const buffer = await generateDebtorsExcelBuffer('este mes');
+          await ctx.replyWithDocument(new InputFile(buffer, 'Deudores_Jaguares.xlsx'), {
+            caption: '📑 <b>Reporte de Deudores de Mensualidad</b> (.xlsx)',
+            parse_mode: 'HTML'
+          });
+          return;
+        } catch (err: any) {
+          await ctx.reply(`⚠️ Error al generar Excel: ${err.message}`);
+          return;
+        }
+      }
+
+      if (norm.includes('alumno') || norm.includes('inscrit') || norm.includes('padron')) {
+        await ctx.reply('⏳ Generando padrón de alumnos en Excel...');
+        try {
+          const buffer = await generateStudentsExcelBuffer();
+          await ctx.replyWithDocument(new InputFile(buffer, 'Padron_Alumnos_Jaguares.xlsx'), {
+            caption: '👥 <b>Padrón de Alumnos</b> (.xlsx)',
+            parse_mode: 'HTML'
+          });
+          return;
+        } catch (err: any) {
+          await ctx.reply(`⚠️ Error al generar Excel: ${err.message}`);
+          return;
+        }
+      }
+
+      if (norm.includes('cupo') || norm.includes('horario') || norm.includes('capacidad')) {
+        await ctx.reply('⏳ Generando reporte de cupos en Excel...');
+        try {
+          const buffer = await generateCapacityExcelBuffer();
+          await ctx.replyWithDocument(new InputFile(buffer, 'Horarios_Cupos_Jaguares.xlsx'), {
+            caption: '🏟️ <b>Horarios y Cupos</b> (.xlsx)',
+            parse_mode: 'HTML'
+          });
+          return;
+        } catch (err: any) {
+          await ctx.reply(`⚠️ Error al generar Excel: ${err.message}`);
+          return;
+        }
+      }
+
+      // Si solo dijo "excel", mostrar menú de descarga
+      await ctx.reply('📊 <b>Descargas en Excel (.xlsx)</b>\n¿Cuál de estos reportes deseas descargar?', {
+        parse_mode: 'HTML',
+        reply_markup: getExcelKeyboard()
+      });
+      return;
+    }
 
     // Si hay conversación previa y el mensaje es de seguimiento breve (ej: "si", "ok", "claro", "por favor", "detallalo", "quienes son"),
     // omitimos el enrutador de reglas estáticas para que el LLM resuelva en base al hilo de la conversación.
@@ -348,8 +658,9 @@ export function createBot(token: string): Bot {
           `• Alumnos: <i>"¿Cuántos alumnos hay en fútbol?"</i>\n` +
           `• Ingresos: <i>"¿Cuánto cobramos este mes?"</i>\n` +
           `• Deudas: <i>"¿Cuánto falta cobrar?"</i> o <i>"¿Quiénes deben?"</i>\n` +
-          `• Cupos: <i>"¿Cómo están los cupos?"</i>\n\n` +
-          `Escribe /menu para ver las opciones directas.`,
+          `• Cupos: <i>"¿Cómo están los cupos?"</i>\n` +
+          `• Excel: <i>"Envíame la lista en Excel"</i>\n\n` +
+          `Escribe /menu o presiona la barra <b>/</b> para ver todos los comandos.`,
         { parse_mode: 'HTML' }
       );
       return;
@@ -360,7 +671,7 @@ export function createBot(token: string): Bot {
         case 'general.greeting': {
           const name = ctx.from?.first_name || 'dueño/administrador';
           const reply = `👋 ¡Hola ${name}! ¿En qué puedo ayudarte hoy con la Escuela Jaguares?\n\n` +
-            `Puedes preguntarme sobre alumnos, cobranzas, deudas o cupos:`;
+            `Puedes preguntarme sobre alumnos, cobranzas, deudas, cupos o pedir reportes en Excel:`;
           addChatMessage(chatId, 'user', rawText);
           addChatMessage(chatId, 'assistant', reply);
           await ctx.reply(reply, {

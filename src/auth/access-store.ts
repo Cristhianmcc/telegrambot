@@ -17,6 +17,9 @@ export interface Membership {
   username?: string;
   linkedAt: string;
   status: 'active' | 'revoked';
+  dailyDigestEnabled?: boolean;
+  digestHour?: string; // '07:00' | '08:00' | '09:00' | '14:00' | '20:00'
+  lastDigestSentDate?: string; // YYYY-MM-DD
 }
 
 export interface ActivationCode {
@@ -128,6 +131,29 @@ class AccessStore {
       return true;
     }
     return false;
+  }
+
+  public updateDigestSettings(
+    telegramUserId: number,
+    enabled: boolean,
+    hour: string = '08:00'
+  ): boolean {
+    const m = this.data.memberships[telegramUserId.toString()];
+    if (m) {
+      m.dailyDigestEnabled = enabled;
+      m.digestHour = hour;
+      this.save();
+      return true;
+    }
+    return false;
+  }
+
+  public recordDigestSent(telegramUserId: number, dateStr: string): void {
+    const m = this.data.memberships[telegramUserId.toString()];
+    if (m) {
+      m.lastDigestSentDate = dateStr;
+      this.save();
+    }
   }
 
   // --- ACTIVATION CODES ---

@@ -1,7 +1,8 @@
 import 'dotenv/config';
-import { createBot } from './bot/bot.js';
+import { createBot, registerBotSlashCommands } from './bot/bot.js';
 import { getJaguaresPool } from './connectors/jaguares/jaguares-db.js';
 import { initLLMClient } from './llm/llm-router.js';
+import { initDailyDigestScheduler } from './scheduler/daily-digest.js';
 
 async function bootstrap() {
   console.log('🐆 Iniciando Bot Empresarial de Telegram (Módulo Escuela Jaguares)...');
@@ -32,6 +33,12 @@ async function bootstrap() {
   // 3. Inicializar y arrancar Bot
   const bot = createBot(token);
 
+  // Registrar comandos Slash (/) en los servidores de Telegram para autocompletado
+  await registerBotSlashCommands(bot);
+
+  // Iniciar programador de reportes automáticos (Daily Digest)
+  initDailyDigestScheduler(bot);
+
   console.log('🚀 Bot de Telegram iniciado en modo polling.');
   console.log('📱 Abre tu bot en Telegram y escribe /start o "¿Cómo está la escuela?"');
 
@@ -42,7 +49,7 @@ async function bootstrap() {
   });
 }
 
-bootstrap().catch((err) => {
+bootstrap().catch((err: any) => {
   console.error('❌ Error fatal al iniciar el bot:', err);
   process.exit(1);
 });
