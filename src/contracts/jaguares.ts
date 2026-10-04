@@ -86,3 +86,49 @@ export interface JagRecentStudent {
   fechaInscripcion: string;
 }
 
+export interface JagStudentDetail {
+  alumnoId: number;
+  dni: string;
+  nombreCompleto: string;
+  nombres: string;
+  apellidos: string;
+  fechaNacimiento?: string;
+  edad?: number;
+  apoderado?: string;
+  telefonoApoderado?: string;
+  estadoAlumno: string;
+  disciplinas: Array<{
+    deporte: string;
+    dia?: string;
+    horario?: string;
+    precioMensual: number;
+  }>;
+  deuda: {
+    tieneDeuda: boolean;
+    totalDeuda: number;
+    mesesPendientes: Array<{
+      pagoId: number;
+      mes: string;
+      anio: number;
+      monto: number;
+      estado: string;
+      comprobanteUrl?: string;
+    }>;
+  };
+}
+
+export interface JagVoucherDetail {
+  pagoId: number;
+  alumnoId: number;
+  alumnoNombre: string;
+  dni: string;
+  telefono?: string;
+  monto: number;
+  mes?: string;
+  anio?: number;
+  numeroOperacion?: string;
+  metodoPago?: string;
+  comprobanteUrl: string;
+  estado: string;
+  fechaPago?: string;
+}

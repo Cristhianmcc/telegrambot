@@ -11,8 +11,12 @@ import {
   renderCapacity,
   renderEnrollments,
   renderRecentStudents,
-  markdownToTelegramHtml
+  renderStudentDetail,
+  renderVoucherDetail,
+  markdownToTelegramHtml,
+  escapeHtml
 } from '../rendering/jaguares-templates.js';
+import { transcribeAudioUrl } from '../audio/transcription.js';
 import { resolvePeriod } from '../date-resolver/date-resolver.js';
 import { getChatHistory, addChatMessage, clearChatHistory } from './conversation-memory.js';
 import { accessStore } from '../auth/access-store.js';
@@ -26,6 +30,8 @@ import { sendDailyDigestToUser } from '../scheduler/daily-digest.js';
 
 export const BOT_SLASH_COMMANDS = [
   { command: 'menu', description: '📋 Menú interactivo principal' },
+  { command: 'buscar', description: '🔍 Buscar alumno y WhatsApp de cobranza' },
+  { command: 'comprobantes', description: '📸 Ver vouchers y comprobantes Yape/Plin' },
   { command: 'resumen', description: '🎓 Resumen general de la escuela' },
   { command: 'alumnos', description: '👥 Alumnos activos y por disciplina' },
   { command: 'ingresos', description: '💰 Ingresos cobrados en el mes' },
@@ -63,6 +69,9 @@ export function createBot(token: string): Bot {
       .row()
       .text('⏳ Quiénes Deben', 'action_debtors')
       .text('🏟️ Cupos y Horarios', 'action_capacity')
+      .row()
+      .text('🔍 Buscar Alumno', 'action_prompt_search')
+      .text('📸 Vouchers Yape/Plin', 'action_vouchers')
       .row()
       .text('📊 Reportes Excel (.xlsx)', 'excel_menu')
       .text('⏰ Alertas y Notificaciones', 'notif_menu');
@@ -142,10 +151,129 @@ export function createBot(token: string): Bot {
     return { text: message, keyboard: kb };
   }
 
+  // --- HELPER BÚSQUEDA DE ALUMNO ---
+  async function handleStudentSearch(ctx: any, term: string) {
+    const cleanTerm = term.trim();
+    if (!cleanTerm) {
+      await ctx.reply(
+        `🔍 <b>Búsqueda de Alumnos · Escuela Jaguares</b>\n\n` +
+          `Escribe el nombre, apellido o DNI del alumno para ver su ficha y contactar a su apoderado por WhatsApp.\n\n` +
+          `Ejemplos:\n` +
+          `• <code>/buscar Huamani</code>\n` +
+          `• <code>/buscar 74859612</code>\n` +
+          `• O simplemente escribe el DNI directo en el chat.`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+
+    const waitMsg = await ctx.reply(`🔍 Buscando a <i>"${cleanTerm}"</i>...`, { parse_mode: 'HTML' });
+
+    try {
+      const students = await jaguaresService.searchStudents(cleanTerm, 5);
+      await ctx.api.deleteMessage(ctx.chat.id, waitMsg.message_id).catch(() => {});
+
+      if (students.length === 0) {
+        await ctx.reply(
+          `❌ No se encontró ningún alumno con el término <b>"${cleanTerm}"</b>.\n\n` +
+            `Verifica si el DNI o apellido está bien escrito o consulta el padrón con /alumnos.`,
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
+
+      if (students.length === 1) {
+        const student = students[0];
+        const view = renderStudentDetail(student);
+        await ctx.reply(view.text, {
+          parse_mode: 'HTML',
+          reply_markup: view.keyboard
+        });
+        return;
+      }
+
+      // Varios resultados: mostrar selector
+      let text = `🔍 <b>Se encontraron ${students.length} alumnos para "${cleanTerm}":</b>\n\n`;
+      const kb = new InlineKeyboard();
+
+      students.forEach((s, idx) => {
+        text += `${idx + 1}. <b>${s.nombreCompleto}</b> (DNI: <code>${s.dni}</code>)\n`;
+        if (s.deuda.tieneDeuda) {
+          text += `   🚨 Debe: S/ ${s.deuda.totalDeuda.toFixed(2)}\n`;
+        } else {
+          text += `   ✅ Al día\n`;
+        }
+        kb.text(`👤 ${s.nombres} (${s.dni})`, `student_view_${s.alumnoId}`).row();
+      });
+
+      kb.text('🔙 Volver al Menú', 'action_back_menu');
+
+      text += `\n👇 <i>Selecciona un alumno para ver su ficha completa y contactar por WhatsApp:</i>`;
+
+      await ctx.reply(text, {
+        parse_mode: 'HTML',
+        reply_markup: kb
+      });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error en la búsqueda: ${err.message}`);
+    }
+  }
+
+  // --- HELPER CONSULTA DE COMPROBANTES ---
+  async function handleVouchersList(ctx: any, filter?: string) {
+    const waitMsg = await ctx.reply('📸 Consultando comprobantes en tiempo real...');
+    try {
+      const vouchers = await jaguaresService.getRecentVouchers(5, filter);
+      await ctx.api.deleteMessage(ctx.chat.id, waitMsg.message_id).catch(() => {});
+
+      if (vouchers.length === 0) {
+        await ctx.reply(
+          filter
+            ? `ℹ️ No se encontraron comprobantes para <b>"${filter}"</b>.`
+            : `ℹ️ No hay comprobantes de pago subidos recientemente.`,
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
+
+      await ctx.reply(
+        `📸 <b>Últimos ${vouchers.length} Comprobantes de Pago Registrados</b>\n` +
+          `Verificados en la plataforma de Escuela Jaguares:`,
+        { parse_mode: 'HTML' }
+      );
+
+      for (const v of vouchers) {
+        const view = renderVoucherDetail(v);
+        let sentWithPhoto = false;
+
+        if (v.comprobanteUrl && (v.comprobanteUrl.endsWith('.jpg') || v.comprobanteUrl.endsWith('.jpeg') || v.comprobanteUrl.endsWith('.png') || v.comprobanteUrl.endsWith('.webp') || v.comprobanteUrl.includes('uploads'))) {
+          try {
+            await ctx.replyWithPhoto(v.comprobanteUrl, {
+              caption: view.text,
+              parse_mode: 'HTML',
+              reply_markup: view.keyboard
+            });
+            sentWithPhoto = true;
+          } catch {
+            sentWithPhoto = false;
+          }
+        }
+
+        if (!sentWithPhoto) {
+          await ctx.reply(view.text, {
+            parse_mode: 'HTML',
+            reply_markup: view.keyboard
+          });
+        }
+      }
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error consultando comprobantes: ${err.message}`);
+    }
+  }
+
   // 🔒 Middleware de autorización comercial (Multi-tenant Guard)
   bot.use(async (ctx, next) => {
     const text = ctx.message?.text || '';
-    // Permitir libremente comandos públicos de bienvenida, activación y panel maestro
     if (text.startsWith('/start') || text.startsWith('/activar') || text.startsWith('/admin')) {
       return next();
     }
@@ -156,7 +284,6 @@ export function createBot(token: string): Bot {
 
     const userId = ctx.from?.id;
     if (userId) {
-      // 👑 El Creador / Superadmin Maestro tiene acceso total ilimitado y queda auto-vinculado
       if (accessStore.isSuperadmin(userId)) {
         if (!accessStore.getMembership(userId)) {
           accessStore.setMembership({
@@ -172,7 +299,6 @@ export function createBot(token: string): Bot {
         return next();
       }
 
-      // Para el resto de usuarios, verificar si tienen membresía activa
       if (!accessStore.getMembership(userId)) {
         if (ctx.callbackQuery) {
           await ctx.answerCallbackQuery({
@@ -198,14 +324,14 @@ export function createBot(token: string): Bot {
     return next();
   });
 
-  // /start (con soporte para deep-link de activación: t.me/Bot?start=CODIGO)
+  // /start
   bot.command('start', async (ctx) => {
     clearChatHistory(ctx.chat.id);
     const from = ctx.from;
     if (!from) return;
     const userId = from.id;
 
-    const payload = ctx.match?.trim(); // parámetro después de /start, ej: ACT-JAG-XXXX
+    const payload = ctx.match?.trim();
 
     if (payload) {
       const res = accessStore.consumeActivationCode(
@@ -222,7 +348,7 @@ export function createBot(token: string): Bot {
           `🏢 <b>${res.tenant.name}</b>\n` +
           `👑 Rol asignado: <b>${res.role?.toUpperCase()}</b>\n` +
           `✨ Plan: <b>${res.tenant.plan.toUpperCase()}</b>\n\n` +
-          `Ya tienes acceso total para consultar métricas, alumnos, finanzas y horarios en tiempo real.\n\n` +
+          `Ya tienes acceso total para consultar métricas, alumnos, finanzas, comprobantes y cobranzas.\n\n` +
           `👇 Escribe cualquier consulta o usa los botones directos del menú:`;
 
         await ctx.reply(welcomeText, {
@@ -240,15 +366,13 @@ export function createBot(token: string): Bot {
       }
     }
 
-    // Si no pasó payload, verificar si ya tiene membresía activa
     const membership = accessStore.getMembership(userId);
     if (!membership) {
       await ctx.reply(
         `🔒 <b>Acceso Privado · Bot Empresarial</b>\n\n` +
           `Hola ${from.first_name}. Este es un servicio exclusivo de gestión para clientes autorizados.\n\n` +
           `👉 <b>¿Ya tienes tu código de activación?</b>\n` +
-          `Escribe: <code>/activar TU_CODIGO</code>\n` +
-          `<i>(O haz clic directamente en el enlace de invitación que te enviamos)</i>\n\n` +
+          `Escribe: <code>/activar TU_CODIGO</code>\n\n` +
           `👉 <b>¿Deseas contratar este bot para tu negocio?</b>\n` +
           `Contáctanos para habilitar una suscripción para tu empresa.`,
         { parse_mode: 'HTML' }
@@ -261,12 +385,12 @@ export function createBot(token: string): Bot {
 
     const text =
       `👋 ¡Hola ${from.first_name}! Bienvenido a tu <b>Asistente de Gestión · ${tenantName}</b>.\n\n` +
-      `Puedes consultarme métricas, alumnos, ingresos y cobranzas en lenguaje natural o usando los comandos <b>/</b>.\n\n` +
+      `Puedes consultarme métricas, buscar alumnos con WhatsApp de cobranza o ver comprobantes de pago.\n\n` +
       `📌 <b>Ejemplos de preguntas:</b>\n` +
+      `• <i>"Buscar Huamani"</i> (o escribe su DNI)\n` +
+      `• <i>"Ver comprobantes"</i>\n` +
       `• <i>"¿Cómo está la escuela?"</i>\n` +
-      `• <i>"¿Cuántos alumnos tenemos?"</i>\n` +
       `• <i>"¿Cuánto hemos cobrado este mes?"</i>\n` +
-      `• <i>"¿Quiénes deben este mes?"</i>\n` +
       `• <i>"Envíame la lista en Excel"</i>\n\n` +
       `👇 O usa los botones directos del menú:`;
 
@@ -329,6 +453,18 @@ export function createBot(token: string): Bot {
       parse_mode: 'HTML',
       reply_markup: kb
     });
+  });
+
+  // /buscar <nombre o dni>
+  bot.command('buscar', async (ctx) => {
+    const term = ctx.match?.trim() || '';
+    await handleStudentSearch(ctx, term);
+  });
+
+  // /comprobantes
+  bot.command(['comprobantes', 'vouchers'], async (ctx) => {
+    const filter = ctx.match?.trim() || undefined;
+    await handleVouchersList(ctx, filter);
   });
 
   // /resumen
@@ -419,6 +555,10 @@ export function createBot(token: string): Bot {
     const helpText =
       `ℹ️ <b>Guía de Consultas para Escuela Jaguares</b>\n\n` +
       `Puedes escribir de forma natural o usar la barra <b>/</b> para ver todos los comandos directos:\n\n` +
+      `🔍 <b>Búsqueda de Alumno con WhatsApp:</b>\n` +
+      `• <code>/buscar Huamani</code> o escribe un DNI de 8 dígitos.\n\n` +
+      `📸 <b>Comprobantes y Vouchers:</b>\n` +
+      `• <code>/comprobantes</code> o <i>"ver vouchers de pago"</i>\n\n` +
       `🎓 <b>Resumen Ejecutivo:</b>\n` +
       `• <code>/resumen</code> o <i>"¿Cómo va la escuela?"</i>\n\n` +
       `👥 <b>Alumnos y Disciplinas:</b>\n` +
@@ -426,14 +566,11 @@ export function createBot(token: string): Bot {
       `💰 <b>Finanzas e Ingresos:</b>\n` +
       `• <code>/ingresos</code> o <i>"¿Cuánto dinero hemos cobrado este mes?"</i>\n\n` +
       `📋 <b>Deudas y Cobranzas:</b>\n` +
-      `• <code>/deudas</code> o <i>"¿Cuánto falta por cobrar?"</i>\n` +
-      `• <code>/deudores</code> o <i>"¿Quiénes deben este mes?"</i>\n\n` +
-      `🏟️ <b>Cupos y Horarios:</b>\n` +
-      `• <code>/cupos</code> o <i>"¿Cómo están los cupos de fútbol?"</i>\n\n` +
+      `• <code>/deudas</code> o <code>/deudores</code>\n\n` +
       `📊 <b>Archivos Excel:</b>\n` +
       `• <code>/excel</code> o <i>"Envíame la lista en Excel"</i>\n\n` +
       `⏰ <b>Alertas y Reporte Matutino:</b>\n` +
-      `• <code>/notificaciones</code> para elegir qué temas recibir y la hora.`;
+      `• <code>/notificaciones</code> para configurar qué recibir y la hora.`;
 
     await ctx.reply(helpText, { parse_mode: 'HTML' });
   });
@@ -503,12 +640,54 @@ export function createBot(token: string): Bot {
     }
   });
 
+  bot.callbackQuery('action_prompt_search', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      `🔍 <b>Búsqueda de Alumnos</b>\n\n` +
+        `Escribe el nombre, apellido o DNI del alumno.\n` +
+        `Ejemplo: <code>/buscar Huamani</code> o simplemente escribe <code>74859612</code>`,
+      { parse_mode: 'HTML' }
+    );
+  });
+
+  bot.callbackQuery('action_vouchers', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await handleVouchersList(ctx);
+  });
+
   bot.callbackQuery('action_back_menu', async (ctx) => {
     await ctx.answerCallbackQuery();
     await ctx.editMessageText('📋 <b>Menú de Consultas Rápidas</b>', {
       parse_mode: 'HTML',
       reply_markup: getMainKeyboard()
     });
+  });
+
+  // --- CALLBACK VER ALUMNO ESPECÍFICO ---
+  bot.callbackQuery(/^student_view_(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const alumnoId = parseInt(ctx.match[1], 10);
+    try {
+      const students = await jaguaresService.searchStudents(alumnoId.toString(), 1);
+      if (students.length > 0) {
+        const view = renderStudentDetail(students[0]);
+        await ctx.reply(view.text, {
+          parse_mode: 'HTML',
+          reply_markup: view.keyboard
+        });
+      } else {
+        await ctx.reply('⚠️ No se encontró la ficha del alumno.');
+      }
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error consultando ficha: ${err.message}`);
+    }
+  });
+
+  // --- CALLBACK VER VOUCHER DE UN ALUMNO ---
+  bot.callbackQuery(/^voucher_view_(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery({ text: '📸 Cargando voucher...' });
+    const alumnoId = parseInt(ctx.match[1], 10);
+    await handleVouchersList(ctx, alumnoId.toString());
   });
 
   // --- CALLBACKS DE EXCEL ---
@@ -660,15 +839,46 @@ export function createBot(token: string): Bot {
     }
   });
 
-  // Mensajes de texto libres en lenguaje natural
-  bot.on('message:text', async (ctx) => {
-    const rawText = ctx.message.text;
+  // Procesamiento unificado de consultas en lenguaje natural (texto o voz)
+  async function handleNaturalLanguageQuery(ctx: any, rawText: string) {
     const chatId = ctx.chat.id;
     const history = getChatHistory(chatId);
 
     const norm = rawText.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
-    // Atajo directo si pide Excel en texto libre: "dame el excel", "envíame los deudores en excel", "archivo excel"
+    // 1. DNI directo (8 dígitos)
+    if (/^\d{8}$/.test(rawText)) {
+      await handleStudentSearch(ctx, rawText);
+      return;
+    }
+
+    // 2. Búsqueda explícita de alumno por texto libre: "buscar huamani", "ficha de perez", "datos de huamani"
+    if (
+      norm.startsWith('buscar ') ||
+      norm.startsWith('busca ') ||
+      norm.startsWith('ficha de ') ||
+      norm.startsWith('datos de ') ||
+      norm.startsWith('alumno ')
+    ) {
+      const query = rawText.replace(/^(buscar|busca|ficha de|datos de|alumno)\s+/i, '').trim();
+      await handleStudentSearch(ctx, query);
+      return;
+    }
+
+    // 3. Consulta de Comprobantes o Vouchers en texto libre
+    if (
+      norm.includes('comprobante') ||
+      norm.includes('voucher') ||
+      norm.includes('yape') ||
+      norm.includes('plin')
+    ) {
+      if (norm.includes('ver') || norm.includes('mostrar') || norm.includes('ultim') || norm.includes('foto') || norm.includes('lista')) {
+        await handleVouchersList(ctx);
+        return;
+      }
+    }
+
+    // 4. Descargas de Excel en texto libre
     if (norm.includes('excel') || norm.includes('xlsx')) {
       if (norm.includes('deud') || norm.includes('pag') || norm.includes('cobran')) {
         await ctx.reply('⏳ Generando archivo Excel de deudores...');
@@ -715,7 +925,6 @@ export function createBot(token: string): Bot {
         }
       }
 
-      // Si solo dijo "excel", mostrar menú de descarga
       await ctx.reply('📊 <b>Descargas en Excel (.xlsx)</b>\n¿Cuál de estos reportes deseas descargar?', {
         parse_mode: 'HTML',
         reply_markup: getExcelKeyboard()
@@ -723,12 +932,11 @@ export function createBot(token: string): Bot {
       return;
     }
 
-    // Si hay conversación previa y el mensaje es de seguimiento breve (ej: "si", "ok", "claro", "por favor", "detallalo", "quienes son"),
-    // omitimos el enrutador de reglas estáticas para que el LLM resuelva en base al hilo de la conversación.
+    // Seguimiento conversacional
     const isShortFollowUp =
       history.length > 0 &&
       /^(s[ií]|claro|por favor|ok|dale|vale|no|adelante|det[aá]llalo|det[aá]llalos|mu[eé]stralo|mu[eé]stralos|a ver)[.!]?$/i.test(
-        rawText.trim()
+        rawText
       );
 
     let match = null;
@@ -736,7 +944,6 @@ export function createBot(token: string): Bot {
       match = routeMessage(rawText);
     }
 
-    // 2. Si no coincide con regla fija o es seguimiento conversacional, consultar con LLM pasando el historial
     if (!match) {
       match = await routeMessageWithLLM(rawText, { history });
     }
@@ -744,14 +951,15 @@ export function createBot(token: string): Bot {
     if (!match) {
       await ctx.reply(
         `No entendí del todo tu consulta 🤔\n\n` +
-          `Puedo responderte sobre:\n` +
-          `• Resumen general: <i>"¿Cómo está la escuela?"</i>\n` +
-          `• Alumnos: <i>"¿Cuántos alumnos hay en fútbol?"</i>\n` +
-          `• Ingresos: <i>"¿Cuánto cobramos este mes?"</i>\n` +
-          `• Deudas: <i>"¿Cuánto falta cobrar?"</i> o <i>"¿Quiénes deben?"</i>\n` +
-          `• Cupos: <i>"¿Cómo están los cupos?"</i>\n` +
-          `• Excel: <i>"Envíame la lista en Excel"</i>\n\n` +
-          `Escribe /menu o presiona la barra <b>/</b> para ver todos los comandos.`,
+          `Puedo ayudarte con:\n` +
+          `• 🔍 Buscar alumno: <code>/buscar Huamani</code> (o escribe su DNI)\n` +
+          `• 📸 Ver comprobantes: <code>/comprobantes</code>\n` +
+          `• 🎓 Resumen general: <i>"¿Cómo está la escuela?"</i>\n` +
+          `• 👥 Alumnos: <i>"¿Cuántos alumnos hay en fútbol?"</i>\n` +
+          `• 💰 Ingresos: <i>"¿Cuánto cobramos este mes?"</i>\n` +
+          `• 📋 Deudas: <i>"¿Quiénes deben este mes?"</i>\n` +
+          `• 📊 Excel: <i>"Envíame la lista en Excel"</i>\n\n` +
+          `Escribe /menu o presiona la barra <b>/</b> para ver los accesos rápidos.`,
         { parse_mode: 'HTML' }
       );
       return;
@@ -762,7 +970,7 @@ export function createBot(token: string): Bot {
         case 'general.greeting': {
           const name = ctx.from?.first_name || 'dueño/administrador';
           const reply = `👋 ¡Hola ${name}! ¿En qué puedo ayudarte hoy con la Escuela Jaguares?\n\n` +
-            `Puedes preguntarme sobre alumnos, cobranzas, deudas, cupos o pedir reportes en Excel:`;
+            `Puedes preguntarme sobre alumnos, cobranzas, deudas, cupos o buscar alumnos con WhatsApp de cobranza:`;
           addChatMessage(chatId, 'user', rawText);
           addChatMessage(chatId, 'assistant', reply);
           await ctx.reply(reply, {
@@ -789,7 +997,7 @@ export function createBot(token: string): Bot {
 
         case 'general.help': {
           await ctx.reply(
-            `Escribe tu pregunta o usa /menu para ver los botones rápidos.\nEjemplo: <i>"¿Cuánto hemos cobrado este mes?"</i>`,
+            `Escribe tu pregunta, el DNI de un alumno o usa /menu para ver los botones rápidos.\nEjemplo: <code>/buscar Huamani</code>`,
             { parse_mode: 'HTML' }
           );
           break;
@@ -884,6 +1092,43 @@ export function createBot(token: string): Bot {
     } catch (error: any) {
       console.error('Error al procesar consulta:', error);
       await ctx.reply(`⚠️ Ocurrió un error al consultar los datos: ${error.message}`);
+    }
+  }
+
+  // 1. Mensajes de texto libres
+  bot.on('message:text', async (ctx) => {
+    await handleNaturalLanguageQuery(ctx, ctx.message.text.trim());
+  });
+
+  // 2. Notas de voz o audios (Voice-to-Text con Whisper)
+  bot.on(['message:voice', 'message:audio'], async (ctx) => {
+    const hasVoiceKey = Boolean(process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY);
+    if (!hasVoiceKey) {
+      await ctx.reply(
+        '🎙️ <b>Nota de voz recibida</b>\n\n' +
+          'Para activar la transcripción automática e inteligente de audios (Whisper), solo agrega tu clave <code>GROQ_API_KEY</code> u <code>OPENAI_API_KEY</code> en tu servidor.\n\n' +
+          '💡 <i>Mientras tanto, puedes consultar escribiendo por texto.</i>',
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+
+    try {
+      await ctx.replyWithChatAction('typing');
+      const file = await ctx.getFile();
+      const fileUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+      const transcription = await transcribeAudioUrl(fileUrl);
+
+      if (!transcription || transcription.trim().length === 0) {
+        await ctx.reply('⚠️ No pude entender el audio con claridad. Intenta enviar otra nota de voz más clara o escribir tu consulta.');
+        return;
+      }
+
+      await ctx.reply(`🎙️ <i>«${escapeHtml(transcription)}»</i>`, { parse_mode: 'HTML' });
+      await handleNaturalLanguageQuery(ctx, transcription);
+    } catch (err: any) {
+      console.error('Error al transcribir nota de voz:', err);
+      await ctx.reply(`⚠️ No se pudo procesar la nota de voz: ${err.message}`);
     }
   });
 

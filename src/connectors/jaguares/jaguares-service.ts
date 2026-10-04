@@ -9,7 +9,9 @@ import {
   JagPendingDebtor,
   JagCapacity,
   JagEnrollments,
-  JagRecentStudent
+  JagRecentStudent,
+  JagStudentDetail,
+  JagVoucherDetail
 } from '../../contracts/jaguares.js';
 import { ResolvedPeriod } from '../../contracts/date.js';
 
@@ -54,32 +56,16 @@ export class JaguaresService {
     const incomeThisMonth = parseFloat(incomeRows[0]?.total || '0');
 
     // 4. Deuda / pagos pendientes en pagos_mensuales
-    // 4a. Fila en pagos_mensuales con estado = 'pendiente'
     const pendingReviewRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
       `SELECT COUNT(*) AS count, COALESCE(SUM(monto), 0) AS total 
        FROM pagos_mensuales 
        WHERE LOWER(mes) IN (?, ?) AND \`${colYear}\` = ? AND estado = 'pendiente'`,
       [m1, m2, year]
     );
-    const pendingReviewAmount = parseFloat(pendingReviewRows[0]?.total || '0');
-    const pendingReviewCount = parseInt(pendingReviewRows[0]?.count || '0', 10);
+    const pendingDebtAmount = parseFloat(pendingReviewRows[0]?.total || '0');
+    const pendingDebtCount = pendingReviewRows[0]?.count || 0;
 
-    // 4b. Alumnos activos sin ningún pago registrado en pagos_mensuales para este mes
-    const unpaidRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
-      `SELECT COUNT(DISTINCT a.alumno_id) AS count, COALESCE(SUM(i.precio_mensual), 0) AS total
-       FROM alumnos a
-       JOIN inscripciones i ON i.alumno_id = a.alumno_id AND i.estado = 'activa'
-       LEFT JOIN pagos_mensuales pm ON pm.alumno_id = a.alumno_id AND LOWER(pm.mes) IN (?, ?) AND pm.\`${colYear}\` = ?
-       WHERE pm.pago_id IS NULL`,
-      [m1, m2, year]
-    );
-    const unpaidAmount = parseFloat(unpaidRows[0]?.total || '0');
-    const unpaidCount = parseInt(unpaidRows[0]?.count || '0', 10);
-
-    const pendingDebtAmount = pendingReviewAmount + unpaidAmount;
-    const pendingDebtCount = pendingReviewCount + unpaidCount;
-
-    // 5. Disciplina con más alumnos activos
+    // 5. Disciplina con mayor cantidad de alumnos
     const topRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
       `SELECT d.nombre, COUNT(DISTINCT i.alumno_id) AS count
        FROM inscripciones i
@@ -146,7 +132,7 @@ export class JaguaresService {
   }
 
   /**
-   * Resumen de ingresos recaudados en pagos_mensuales.
+   * Resumen de ingresos confirmados en pagos_mensuales para un período.
    */
   async getIncomeSummary(period: ResolvedPeriod): Promise<JagIncomeSummary> {
     const colYear = getColYear();
@@ -154,43 +140,49 @@ export class JaguaresService {
     const year = period.year;
     const [m1, m2] = getMonthVariants(month);
 
-    // Total confirmado y métodos de pago
-    const rows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
-      `SELECT COALESCE(metodo_pago, 'No especificado') AS method,
-              SUM(monto) AS amount,
+    const totalRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
+      `SELECT COALESCE(SUM(monto), 0) AS total, COUNT(*) AS count
+       FROM pagos_mensuales
+       WHERE LOWER(mes) IN (?, ?) AND \`${colYear}\` = ? AND estado = 'confirmado'`,
+      [m1, m2, year]
+    );
+    const totalConfirmed = parseFloat(totalRows[0]?.total || '0');
+    const paymentsCount = totalRows[0]?.count || 0;
+
+    // Desglose por método de pago si existe
+    const methodRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
+      `SELECT IFNULL(metodo_pago, 'Sin especificar') AS method,
+              COALESCE(SUM(monto), 0) AS amount,
               COUNT(*) AS count
        FROM pagos_mensuales
        WHERE LOWER(mes) IN (?, ?) AND \`${colYear}\` = ? AND estado = 'confirmado'
-       GROUP BY metodo_pago`,
+       GROUP BY IFNULL(metodo_pago, 'Sin especificar')
+       ORDER BY amount DESC`,
       [m1, m2, year]
     );
+    const byMethod = methodRows.map((r) => ({
+      method: r.method,
+      amount: parseFloat(r.amount || '0'),
+      count: r.count
+    }));
 
-    let totalConfirmed = 0;
-    let paymentsCount = 0;
-    const byMethod = rows.map((r) => {
-      const amount = parseFloat(r.amount || '0');
-      const count = parseInt(r.count || '0', 10);
-      totalConfirmed += amount;
-      paymentsCount += count;
-      return { method: r.method, amount, count };
-    });
+    let previousPeriod: JagIncomeSummary['previousPeriod'] | undefined = undefined;
+    if (period.previous) {
+      const prevMonth = period.previous.monthName || 'septiembre';
+      const prevYear = period.previous.year;
+      const [pm1, pm2] = getMonthVariants(prevMonth);
 
-    // Comparación con período anterior si está disponible
-    let previousPeriod: JagIncomeSummary['previousPeriod'] = undefined;
-    if (period.previous?.monthName) {
-      const [prevM1, prevM2] = getMonthVariants(period.previous.monthName);
       const prevRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
         `SELECT COALESCE(SUM(monto), 0) AS total
          FROM pagos_mensuales
          WHERE LOWER(mes) IN (?, ?) AND \`${colYear}\` = ? AND estado = 'confirmado'`,
-        [prevM1, prevM2, period.previous.year]
+        [pm1, pm2, prevYear]
       );
       const prevTotal = parseFloat(prevRows[0]?.total || '0');
-      const changePct =
-        prevTotal > 0
-          ? parseFloat((((totalConfirmed - prevTotal) / prevTotal) * 100).toFixed(1))
-          : null;
-
+      let changePct: number | null = null;
+      if (prevTotal > 0) {
+        changePct = Math.round(((totalConfirmed - prevTotal) / prevTotal) * 100);
+      }
       previousPeriod = {
         periodLabel: period.previous.label,
         totalConfirmed: prevTotal,
@@ -208,7 +200,7 @@ export class JaguaresService {
   }
 
   /**
-   * Resumen de deudas basado en pagos_mensuales.
+   * Resumen de deuda y pagos pendientes en pagos_mensuales.
    */
   async getDebtSummary(period: ResolvedPeriod): Promise<JagDebtSummary> {
     const colYear = getColYear();
@@ -216,18 +208,18 @@ export class JaguaresService {
     const year = period.year;
     const [m1, m2] = getMonthVariants(month);
 
-    // 1. Pagos subidos pendientes de confirmación
-    const pendingRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
+    // 1. Pagos pendientes de revisión en pagos_mensuales
+    const revRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
       `SELECT COUNT(*) AS count, COALESCE(SUM(monto), 0) AS total
        FROM pagos_mensuales
        WHERE LOWER(mes) IN (?, ?) AND \`${colYear}\` = ? AND estado = 'pendiente'`,
       [m1, m2, year]
     );
-    const pendingReviewCount = parseInt(pendingRows[0]?.count || '0', 10);
-    const pendingReviewAmount = parseFloat(pendingRows[0]?.total || '0');
+    const pendingReviewCount = revRows[0]?.count || 0;
+    const pendingReviewAmount = parseFloat(revRows[0]?.total || '0');
 
-    // 2. Alumnos activos sin ningún registro en pagos_mensuales para el mes
-    const unpaidRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
+    // 2. Alumnos activos sin fila de pago para el mes
+    const unpRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
       `SELECT COUNT(DISTINCT a.alumno_id) AS count, COALESCE(SUM(i.precio_mensual), 0) AS total
        FROM alumnos a
        JOIN inscripciones i ON i.alumno_id = a.alumno_id AND i.estado = 'activa'
@@ -235,14 +227,17 @@ export class JaguaresService {
        WHERE pm.pago_id IS NULL`,
       [m1, m2, year]
     );
-    const unpaidCount = parseInt(unpaidRows[0]?.count || '0', 10);
-    const unpaidAmount = parseFloat(unpaidRows[0]?.total || '0');
+    const unpaidCount = unpRows[0]?.count || 0;
+    const unpaidAmount = parseFloat(unpRows[0]?.total || '0');
+
+    const totalDebtors = pendingReviewCount + unpaidCount;
+    const totalDebtAmount = pendingReviewAmount + unpaidAmount;
 
     return {
       month,
       year,
-      totalDebtAmount: pendingReviewAmount + unpaidAmount,
-      totalDebtors: pendingReviewCount + unpaidCount,
+      totalDebtAmount,
+      totalDebtors,
       pendingReviewCount,
       pendingReviewAmount,
       unpaidCount,
@@ -318,37 +313,37 @@ export class JaguaresService {
   }
 
   /**
-   * Ocupación y capacidad de horarios por disciplina.
+   * Capacidad y ocupación de cupos por disciplina u horario.
    */
   async getCapacity(disciplineFilter?: string): Promise<JagCapacity> {
     let query = `
       SELECT d.nombre AS discipline,
-             SUM(h.cupo_maximo) AS totalCapacity,
-             SUM(h.cupos_ocupados) AS occupiedCapacity
+             COALESCE(SUM(h.cupo_maximo), 0) AS total_capacity,
+             COALESCE(SUM(h.cupos_ocupados), 0) AS occupied_capacity
       FROM horarios h
       JOIN deportes d ON h.deporte_id = d.deporte_id
-      WHERE h.estado = 'activo'
+      WHERE h.estado = 'Activo'
     `;
     const params: any[] = [];
     if (disciplineFilter) {
       query += ' AND LOWER(d.nombre) LIKE ?';
       params.push(`%${disciplineFilter.toLowerCase().trim()}%`);
     }
-    query += ' GROUP BY d.deporte_id, d.nombre ORDER BY occupiedCapacity DESC';
+    query += ' GROUP BY d.deporte_id, d.nombre ORDER BY occupied_capacity DESC';
 
     const rows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(query, params);
+
     const items = rows.map((r) => {
-      const totalCapacity = parseInt(r.totalCapacity || '0', 10);
-      const occupiedCapacity = parseInt(r.occupiedCapacity || '0', 10);
-      const availableCapacity = Math.max(0, totalCapacity - occupiedCapacity);
-      const occupancyPct =
-        totalCapacity > 0 ? parseFloat(((occupiedCapacity / totalCapacity) * 100).toFixed(1)) : 0;
+      const total = parseInt(r.total_capacity, 10);
+      const occupied = parseInt(r.occupied_capacity, 10);
+      const available = Math.max(0, total - occupied);
+      const pct = total > 0 ? Math.round((occupied / total) * 100) : 0;
       return {
         discipline: r.discipline,
-        totalCapacity,
-        occupiedCapacity,
-        availableCapacity,
-        occupancyPct
+        totalCapacity: total,
+        occupiedCapacity: occupied,
+        availableCapacity: available,
+        occupancyPct: pct
       };
     });
 
@@ -359,24 +354,20 @@ export class JaguaresService {
   }
 
   /**
-   * Nuevos alumnos y matrículas en un período.
+   * Conteo de matrículas / inscripciones procesadas en un período.
    */
   async getEnrollments(period: ResolvedPeriod): Promise<JagEnrollments> {
-    const newStudentsRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
-      `SELECT COUNT(DISTINCT alumno_id) AS count
-       FROM inscripciones
-       WHERE fecha_inscripcion >= ? AND fecha_inscripcion < ?`,
+    const studentRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
+      'SELECT COUNT(DISTINCT alumno_id) AS count FROM inscripciones WHERE fecha_inscripcion >= ? AND fecha_inscripcion < ?',
       [period.from, period.to]
     );
-    const newStudentsCount = newStudentsRows[0]?.count || 0;
+    const newStudentsCount = studentRows[0]?.count || 0;
 
-    const totalEnrollmentsRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
-      `SELECT COUNT(*) AS count
-       FROM inscripciones
-       WHERE fecha_inscripcion >= ? AND fecha_inscripcion < ?`,
+    const enrollRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
+      'SELECT COUNT(*) AS count FROM inscripciones WHERE fecha_inscripcion >= ? AND fecha_inscripcion < ?',
       [period.from, period.to]
     );
-    const totalEnrollmentsCount = totalEnrollmentsRows[0]?.count || 0;
+    const totalEnrollmentsCount = enrollRows[0]?.count || 0;
 
     const discRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
       `SELECT d.nombre AS discipline, COUNT(*) AS count
@@ -427,6 +418,175 @@ export class JaguaresService {
         nombreCompleto: `${r.nombres} ${r.apellido_paterno} ${r.apellido_materno || ''}`.trim(),
         deporte: r.deporte || 'No especificado',
         fechaInscripcion: fechaFormatted
+      };
+    });
+  }
+
+  /**
+   * Búsqueda de alumnos por DNI o nombres/apellidos con detalle de deudas y horarios.
+   */
+  async searchStudents(searchTerm: string, limit: number = 5): Promise<JagStudentDetail[]> {
+    const cleanTerm = searchTerm.trim().toLowerCase();
+    const colYear = getColYear();
+
+    const studentRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
+      `SELECT 
+         a.alumno_id, a.dni, a.nombres, a.apellido_paterno, a.apellido_materno,
+         a.fecha_nacimiento,
+         TIMESTAMPDIFF(YEAR, a.fecha_nacimiento, CURDATE()) AS edad,
+         IFNULL(a.apoderado, '') AS apoderado,
+         IFNULL(a.telefono_apoderado, IFNULL(a.telefono, '')) AS telefono_apoderado,
+         a.estado AS estado_alumno
+       FROM alumnos a
+       WHERE a.dni LIKE ? 
+          OR LOWER(CONCAT(a.nombres, ' ', a.apellido_paterno, ' ', IFNULL(a.apellido_materno, ''))) LIKE ?
+       ORDER BY a.apellido_paterno ASC, a.nombres ASC
+       LIMIT ?`,
+      [`%${cleanTerm}%`, `%${cleanTerm}%`, limit]
+    );
+
+    const results: JagStudentDetail[] = [];
+
+    for (const r of studentRows) {
+      // 1. Disciplinas y horarios inscritos
+      const discRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
+        `SELECT 
+           d.nombre AS deporte,
+           i.precio_mensual,
+           h.dia,
+           TIME_FORMAT(h.hora_inicio, '%H:%i') AS hora_inicio,
+           TIME_FORMAT(h.hora_fin, '%H:%i') AS hora_fin
+         FROM inscripciones i
+         JOIN deportes d ON i.deporte_id = d.deporte_id
+         LEFT JOIN inscripcion_horarios ih ON i.inscripcion_id = ih.inscripcion_id AND ih.estado = 'activo'
+         LEFT JOIN horarios h ON ih.horario_id = h.horario_id
+         WHERE i.alumno_id = ? AND (i.estado = 'activa' OR i.estado = 'activo')`,
+        [r.alumno_id]
+      );
+
+      const disciplinas = discRows.map((d) => ({
+        deporte: d.deporte,
+        dia: d.dia || undefined,
+        horario: d.hora_inicio && d.hora_fin ? `${d.hora_inicio} - ${d.hora_fin}` : undefined,
+        precioMensual: parseFloat(d.precio_mensual || '0')
+      }));
+
+      // 2. Pagos pendientes en pagos_mensuales
+      const debtRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
+        `SELECT 
+           pm.pago_id, pm.mes, pm.\`${colYear}\` AS anio, pm.monto, pm.estado, pm.comprobante_url
+         FROM pagos_mensuales pm
+         WHERE pm.alumno_id = ? AND pm.estado = 'pendiente'
+         ORDER BY pm.pago_id DESC`,
+        [r.alumno_id]
+      );
+
+      let totalDeuda = 0;
+      const mesesPendientes = debtRows.map((pm) => {
+        const monto = parseFloat(pm.monto || '0');
+        totalDeuda += monto;
+        return {
+          pagoId: pm.pago_id,
+          mes: pm.mes,
+          anio: parseInt(pm.anio, 10),
+          monto,
+          estado: pm.estado,
+          comprobanteUrl: pm.comprobante_url || undefined
+        };
+      });
+
+      let fechaNacFormatted: string | undefined;
+      if (r.fecha_nacimiento) {
+        fechaNacFormatted = DateTime.fromJSDate(new Date(r.fecha_nacimiento)).toFormat('dd/MM/yyyy');
+      }
+
+      results.push({
+        alumnoId: r.alumno_id,
+        dni: r.dni,
+        nombreCompleto: `${r.nombres} ${r.apellido_paterno} ${r.apellido_materno || ''}`.trim(),
+        nombres: r.nombres,
+        apellidos: `${r.apellido_paterno} ${r.apellido_materno || ''}`.trim(),
+        fechaNacimiento: fechaNacFormatted,
+        edad: r.edad !== null ? parseInt(r.edad, 10) : undefined,
+        apoderado: r.apoderado || undefined,
+        telefonoApoderado: r.telefono_apoderado || undefined,
+        estadoAlumno: r.estado_alumno || 'activo',
+        disciplinas,
+        deuda: {
+          tieneDeuda: mesesPendientes.length > 0,
+          totalDeuda,
+          mesesPendientes
+        }
+      });
+    }
+
+    return results;
+  }
+
+  /**
+   * Obtiene los comprobantes de pago subidos recientemente (Yape, Plin, Transferencia).
+   */
+  async getRecentVouchers(limit: number = 5, studentFilter?: string): Promise<JagVoucherDetail[]> {
+    const colYear = getColYear();
+
+    let query = `
+      SELECT 
+        pm.pago_id,
+        pm.alumno_id,
+        CONCAT(a.nombres, ' ', a.apellido_paterno, ' ', IFNULL(a.apellido_materno, '')) AS alumno,
+        a.dni,
+        IFNULL(a.telefono_apoderado, IFNULL(a.telefono, '')) AS telefono,
+        pm.mes,
+        pm.\`${colYear}\` AS anio,
+        pm.monto,
+        pm.estado,
+        pm.metodo_pago,
+        pm.comprobante_url,
+        pm.fecha_pago
+      FROM pagos_mensuales pm
+      JOIN alumnos a ON pm.alumno_id = a.alumno_id
+      WHERE pm.comprobante_url IS NOT NULL 
+        AND TRIM(pm.comprobante_url) != ''
+    `;
+    const params: any[] = [];
+
+    if (studentFilter) {
+      query += ` AND (a.dni LIKE ? OR LOWER(CONCAT(a.nombres, ' ', a.apellido_paterno)) LIKE ?)`;
+      params.push(`%${studentFilter}%`, `%${studentFilter.toLowerCase()}%`);
+    }
+
+    query += ` ORDER BY pm.pago_id DESC LIMIT ?`;
+    params.push(limit);
+
+    const rows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(query, params);
+
+    return rows.map((r) => {
+      let fechaFormatted: string | undefined;
+      if (r.fecha_pago) {
+        fechaFormatted = DateTime.fromJSDate(new Date(r.fecha_pago))
+          .setZone('America/Lima')
+          .toFormat('dd/MM/yyyy hh:mm a');
+      }
+
+      let url = (r.comprobante_url || '').trim();
+      if (url && !url.startsWith('http://') && !url.startsWith('https://')) {
+        const cleanPath = url.startsWith('/') ? url : `/${url}`;
+        url = `https://api.jaguarescar.com${cleanPath}`;
+      }
+
+      return {
+        pagoId: r.pago_id,
+        alumnoId: r.alumno_id,
+        alumnoNombre: r.alumno,
+        dni: r.dni,
+        telefono: r.telefono || undefined,
+        monto: parseFloat(r.monto || '0'),
+        mes: r.mes,
+        anio: parseInt(r.anio, 10),
+        metodoPago: r.metodo_pago || 'Yape / Plin',
+        comprobanteUrl: url,
+        estado: r.estado,
+        fechaPago: fechaFormatted
       };
     });
   }
