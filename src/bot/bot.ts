@@ -26,14 +26,14 @@ import { sendDailyDigestToUser } from '../scheduler/daily-digest.js';
 
 export const BOT_SLASH_COMMANDS = [
   { command: 'menu', description: '📋 Menú interactivo principal' },
-  { command: 'resumen', description: '🎓 Resumen ejecutivo de la escuela' },
+  { command: 'resumen', description: '🎓 Resumen general de la escuela' },
   { command: 'alumnos', description: '👥 Alumnos activos y por disciplina' },
   { command: 'ingresos', description: '💰 Ingresos cobrados en el mes' },
-  { command: 'deudas', description: '📋 Balance de cobranzas y pendientes' },
+  { command: 'deudas', description: '📋 Balance de cobranzas y deudas' },
   { command: 'deudores', description: '⏳ Lista de alumnos con mensualidad pendiente' },
   { command: 'cupos', description: '🏟️ Estado de cupos y horarios' },
   { command: 'excel', description: '📊 Descargar reportes en Excel (.xlsx)' },
-  { command: 'notificaciones', description: '⏰ Configurar reporte automático diario' },
+  { command: 'notificaciones', description: '⏰ Configurar alertas y reporte diario' },
   { command: 'ayuda', description: '❓ Ejemplos de consultas y guía' },
   { command: 'admin', description: '👑 Panel de administración comercial' }
 ];
@@ -65,7 +65,7 @@ export function createBot(token: string): Bot {
       .text('🏟️ Cupos y Horarios', 'action_capacity')
       .row()
       .text('📊 Reportes Excel (.xlsx)', 'excel_menu')
-      .text('⏰ Alertas y Reporte Diario', 'notif_menu');
+      .text('⏰ Alertas y Notificaciones', 'notif_menu');
   }
 
   function getExcelKeyboard(): InlineKeyboard {
@@ -80,31 +80,64 @@ export function createBot(token: string): Bot {
 
   function getNotificationsView(userId: number): { text: string; keyboard: InlineKeyboard } {
     const membership = accessStore.getMembership(userId);
-    const isEnabled = membership?.dailyDigestEnabled ?? false;
+    const isEnabled = membership?.dailyDigestEnabled ?? true;
     const hour = membership?.digestHour || '08:00';
+    const opts = accessStore.getNotificationOptions(userId);
 
-    const statusText = isEnabled
-      ? `✅ <b>Activado</b> (se envía todos los días a las <b>${hour}</b> hora Perú)`
-      : `❌ <b>Desactivado</b>`;
+    const statusBadge = isEnabled
+      ? `✅ <b>Activado</b> (se envía a las <b>${hour}</b> hora Perú)`
+      : `❌ <b>Pausado</b>`;
 
     const message =
-      `⏰ <b>Configuración de Reporte Automático (Daily Digest)</b>\n\n` +
-      `Recibe un resumen ejecutivo automático diario con alumnos, cobros y cobranzas pendientes directo en tu chat sin tener que pedirlo.\n\n` +
-      `📌 <b>Estado actual:</b> ${statusText}\n\n` +
-      `👇 Elige el horario que prefieras para recibirlo o pruébalo ahora:`;
+      `🔔 <b>Configuración de Notificaciones · Escuela Jaguares</b>\n\n` +
+      `Personaliza exactamente qué información deseas recibir en tus reportes automáticos:\n\n` +
+      `📌 <b>Módulos activos:</b>\n` +
+      `• 👥 Alumnos Activos: ${opts.includeStudents ? '✅ <i>Incluido</i>' : '❌ <i>Omitido</i>'}\n` +
+      `• 💰 Ingresos del Mes: ${opts.includeIncome ? '✅ <i>Incluido</i>' : '❌ <i>Omitido</i>'}\n` +
+      `• 🚨 Cobranzas y Deudores: ${opts.includeDebts ? '✅ <i>Incluido</i>' : '❌ <i>Omitido</i>'}\n` +
+      `• 🏟️ Cupos y Horarios: ${opts.includeCapacity ? '✅ <i>Incluido</i>' : '❌ <i>Omitido</i>'}\n` +
+      `• 🆕 Nuevas Matrículas: ${opts.includeNewStudents ? '✅ <i>Incluido</i>' : '❌ <i>Omitido</i>'}\n\n` +
+      `⏰ <b>Horario programado:</b> ${hour} Perú\n` +
+      `📊 <b>Estado de entrega:</b> ${statusBadge}\n\n` +
+      `👇 <i>Toca los botones para activar/desactivar cada tema:</i>`;
 
     const kb = new InlineKeyboard()
-      .text(hour === '07:00' && isEnabled ? '🔘 07:00 AM' : '⚪ 07:00 AM', 'notif_set_07:00')
-      .text(hour === '08:00' && isEnabled ? '🔘 08:00 AM' : '⚪ 08:00 AM', 'notif_set_08:00')
-      .text(hour === '09:00' && isEnabled ? '🔘 09:00 AM' : '⚪ 09:00 AM', 'notif_set_09:00')
+      .text(opts.includeStudents ? '👥 Alumnos: ✅' : '👥 Alumnos: ❌', 'notif_tog_students')
+      .text(opts.includeIncome ? '💰 Ingresos: ✅' : '💰 Ingresos: ❌', 'notif_tog_income')
       .row()
-      .text(hour === '14:00' && isEnabled ? '🔘 02:00 PM' : '⚪ 02:00 PM', 'notif_set_14:00')
-      .text(hour === '20:00' && isEnabled ? '🔘 08:00 PM' : '⚪ 08:00 PM', 'notif_set_20:00')
+      .text(opts.includeDebts ? '🚨 Cobranzas: ✅' : '🚨 Cobranzas: ❌', 'notif_tog_debts')
+      .text(opts.includeCapacity ? '🏟️ Cupos: ✅' : '🏟️ Cupos: ❌', 'notif_tog_capacity')
       .row()
-      .text('🔕 Desactivar', 'notif_disable')
+      .text(opts.includeNewStudents ? '🆕 Nuevos: ✅' : '🆕 Nuevos: ❌', 'notif_tog_newstudents')
+      .row()
+      .text(`⏰ Cambiar Hora (${hour})`, 'notif_pick_hour')
       .text('🚀 Probar envío ahora', 'notif_test_now')
       .row()
+      .text(isEnabled ? '🔕 Pausar Notificaciones' : '🔔 Activar Notificaciones', isEnabled ? 'notif_disable' : 'notif_enable')
+      .row()
       .text('🔙 Volver al Menú', 'action_back_menu');
+
+    return { text: message, keyboard: kb };
+  }
+
+  function getHourSelectionView(userId: number): { text: string; keyboard: InlineKeyboard } {
+    const membership = accessStore.getMembership(userId);
+    const currentHour = membership?.digestHour || '08:00';
+
+    const message =
+      `⏰ <b>Seleccionar Horario de Notificación</b>\n\n` +
+      `Elige a qué hora deseas recibir tu reporte automático diario (hora de Perú UTC-5):\n\n` +
+      `Horario actual: <b>${currentHour}</b>`;
+
+    const kb = new InlineKeyboard()
+      .text(currentHour === '07:00' ? '🔘 07:00 AM' : '⚪ 07:00 AM', 'notif_set_07:00')
+      .text(currentHour === '08:00' ? '🔘 08:00 AM' : '⚪ 08:00 AM', 'notif_set_08:00')
+      .text(currentHour === '09:00' ? '🔘 09:00 AM' : '⚪ 09:00 AM', 'notif_set_09:00')
+      .row()
+      .text(currentHour === '14:00' ? '🔘 02:00 PM' : '⚪ 02:00 PM', 'notif_set_14:00')
+      .text(currentHour === '20:00' ? '🔘 08:00 PM' : '⚪ 08:00 PM', 'notif_set_20:00')
+      .row()
+      .text('🔙 Volver a Notificaciones', 'notif_menu_edit');
 
     return { text: message, keyboard: kb };
   }
@@ -399,8 +432,8 @@ export function createBot(token: string): Bot {
       `• <code>/cupos</code> o <i>"¿Cómo están los cupos de fútbol?"</i>\n\n` +
       `📊 <b>Archivos Excel:</b>\n` +
       `• <code>/excel</code> o <i>"Envíame la lista en Excel"</i>\n\n` +
-      `⏰ <b>Reporte Matutino Automático:</b>\n` +
-      `• <code>/notificaciones</code> para programar la hora de tu reporte diario.`;
+      `⏰ <b>Alertas y Reporte Matutino:</b>\n` +
+      `• <code>/notificaciones</code> para elegir qué temas recibir y la hora.`;
 
     await ctx.reply(helpText, { parse_mode: 'HTML' });
   });
@@ -537,11 +570,69 @@ export function createBot(token: string): Bot {
     });
   });
 
+  bot.callbackQuery('notif_tog_students', async (ctx) => {
+    const opts = accessStore.toggleNotificationOption(ctx.from.id, 'includeStudents');
+    await ctx.answerCallbackQuery({ text: opts.includeStudents ? '👥 Alumnos: Activado' : '👥 Alumnos: Omitido' });
+    const view = getNotificationsView(ctx.from.id);
+    await ctx.editMessageText(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+  });
+
+  bot.callbackQuery('notif_tog_income', async (ctx) => {
+    const opts = accessStore.toggleNotificationOption(ctx.from.id, 'includeIncome');
+    await ctx.answerCallbackQuery({ text: opts.includeIncome ? '💰 Ingresos: Activado' : '💰 Ingresos: Omitido' });
+    const view = getNotificationsView(ctx.from.id);
+    await ctx.editMessageText(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+  });
+
+  bot.callbackQuery('notif_tog_debts', async (ctx) => {
+    const opts = accessStore.toggleNotificationOption(ctx.from.id, 'includeDebts');
+    await ctx.answerCallbackQuery({ text: opts.includeDebts ? '🚨 Cobranzas: Activado' : '🚨 Cobranzas: Omitido' });
+    const view = getNotificationsView(ctx.from.id);
+    await ctx.editMessageText(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+  });
+
+  bot.callbackQuery('notif_tog_capacity', async (ctx) => {
+    const opts = accessStore.toggleNotificationOption(ctx.from.id, 'includeCapacity');
+    await ctx.answerCallbackQuery({ text: opts.includeCapacity ? '🏟️ Cupos: Activado' : '🏟️ Cupos: Omitido' });
+    const view = getNotificationsView(ctx.from.id);
+    await ctx.editMessageText(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+  });
+
+  bot.callbackQuery('notif_tog_newstudents', async (ctx) => {
+    const opts = accessStore.toggleNotificationOption(ctx.from.id, 'includeNewStudents');
+    await ctx.answerCallbackQuery({ text: opts.includeNewStudents ? '🆕 Nuevos Alumnos: Activado' : '🆕 Nuevos Alumnos: Omitido' });
+    const view = getNotificationsView(ctx.from.id);
+    await ctx.editMessageText(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+  });
+
+  bot.callbackQuery('notif_pick_hour', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const view = getHourSelectionView(ctx.from.id);
+    await ctx.editMessageText(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+  });
+
+  bot.callbackQuery('notif_menu_edit', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const view = getNotificationsView(ctx.from.id);
+    await ctx.editMessageText(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+  });
+
   bot.callbackQuery(/^notif_set_(\d\d:\d\d)$/, async (ctx) => {
     const hour = ctx.match[1];
     const userId = ctx.from.id;
     accessStore.updateDigestSettings(userId, true, hour);
-    await ctx.answerCallbackQuery({ text: `✅ Reporte configurado para las ${hour}` });
+    await ctx.answerCallbackQuery({ text: `✅ Horario configurado a las ${hour}` });
+    const view = getNotificationsView(userId);
+    await ctx.editMessageText(view.text, {
+      parse_mode: 'HTML',
+      reply_markup: view.keyboard
+    });
+  });
+
+  bot.callbackQuery('notif_enable', async (ctx) => {
+    const userId = ctx.from.id;
+    accessStore.updateDigestSettings(userId, true);
+    await ctx.answerCallbackQuery({ text: '🔔 Notificaciones activadas' });
     const view = getNotificationsView(userId);
     await ctx.editMessageText(view.text, {
       parse_mode: 'HTML',
@@ -552,7 +643,7 @@ export function createBot(token: string): Bot {
   bot.callbackQuery('notif_disable', async (ctx) => {
     const userId = ctx.from.id;
     accessStore.updateDigestSettings(userId, false);
-    await ctx.answerCallbackQuery({ text: '🔕 Reportes automáticos desactivados' });
+    await ctx.answerCallbackQuery({ text: '🔕 Notificaciones pausadas' });
     const view = getNotificationsView(userId);
     await ctx.editMessageText(view.text, {
       parse_mode: 'HTML',
@@ -561,7 +652,7 @@ export function createBot(token: string): Bot {
   });
 
   bot.callbackQuery('notif_test_now', async (ctx) => {
-    await ctx.answerCallbackQuery({ text: '🚀 Generando reporte de prueba...' });
+    await ctx.answerCallbackQuery({ text: '🚀 Generando reporte personalizado de prueba...' });
     try {
       await sendDailyDigestToUser(bot, ctx.from.id);
     } catch (err: any) {

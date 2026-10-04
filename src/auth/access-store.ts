@@ -9,6 +9,22 @@ export interface Tenant {
   createdAt: string;
 }
 
+export interface NotificationOptions {
+  includeStudents: boolean;     // 👥 Alumnos Activos
+  includeIncome: boolean;       // 💰 Cobros del Mes
+  includeDebts: boolean;        // 🚨 Cobranzas Pendientes
+  includeCapacity: boolean;     // 🏟️ Cupos y Capacidad
+  includeNewStudents: boolean;  // 🆕 Nuevas Matrículas
+}
+
+export const DEFAULT_NOTIFICATION_OPTIONS: NotificationOptions = {
+  includeStudents: true,
+  includeIncome: true,
+  includeDebts: true,
+  includeCapacity: false,
+  includeNewStudents: true
+};
+
 export interface Membership {
   telegramUserId: number;
   tenantId: string;
@@ -20,6 +36,7 @@ export interface Membership {
   dailyDigestEnabled?: boolean;
   digestHour?: string; // '07:00' | '08:00' | '09:00' | '14:00' | '20:00'
   lastDigestSentDate?: string; // YYYY-MM-DD
+  notificationOptions?: NotificationOptions;
 }
 
 export interface ActivationCode {
@@ -154,6 +171,27 @@ class AccessStore {
       m.lastDigestSentDate = dateStr;
       this.save();
     }
+  }
+
+  public getNotificationOptions(telegramUserId: number): NotificationOptions {
+    const m = this.data.memberships[telegramUserId.toString()];
+    return { ...DEFAULT_NOTIFICATION_OPTIONS, ...(m?.notificationOptions || {}) };
+  }
+
+  public toggleNotificationOption(
+    telegramUserId: number,
+    key: keyof NotificationOptions
+  ): NotificationOptions {
+    const m = this.data.memberships[telegramUserId.toString()];
+    if (m) {
+      if (!m.notificationOptions) {
+        m.notificationOptions = { ...DEFAULT_NOTIFICATION_OPTIONS };
+      }
+      m.notificationOptions[key] = !m.notificationOptions[key];
+      this.save();
+      return m.notificationOptions;
+    }
+    return DEFAULT_NOTIFICATION_OPTIONS;
   }
 
   // --- ACTIVATION CODES ---
