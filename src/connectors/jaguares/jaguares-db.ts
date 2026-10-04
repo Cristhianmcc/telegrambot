@@ -13,11 +13,11 @@ export interface JaguaresDbConfig {
 
 export function getJaguaresDbConfigFromEnv(): JaguaresDbConfig {
   return {
-    host: process.env.JAGUARES_DB_HOST || 'localhost',
-    port: parseInt(process.env.JAGUARES_DB_PORT || '3307', 10),
-    user: process.env.JAGUARES_DB_USER || 'root',
-    password: process.env.JAGUARES_DB_PASSWORD || 'rootpassword123',
-    database: process.env.JAGUARES_DB_NAME || 'jaguares_db'
+    host: process.env.JAGUARES_DB_HOST || process.env.DB_HOST || 'localhost',
+    port: parseInt(process.env.JAGUARES_DB_PORT || process.env.DB_PORT || '3306', 10),
+    user: process.env.JAGUARES_DB_USER || process.env.DB_USER || 'root',
+    password: process.env.JAGUARES_DB_PASSWORD ?? process.env.DB_PASSWORD ?? 'rootpassword123',
+    database: process.env.JAGUARES_DB_NAME || process.env.DB_NAME || 'jaguares_db'
   };
 }
 
