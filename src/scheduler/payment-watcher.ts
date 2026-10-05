@@ -1,5 +1,6 @@
 import cron from 'node-cron';
 import { Bot, InlineKeyboard } from 'grammy';
+import { DateTime } from 'luxon';
 import mysql from 'mysql2/promise';
 import { accessStore } from '../auth/access-store.js';
 import { executeReadOnlyQuery, getColYear, getJaguaresPool } from '../connectors/jaguares/jaguares-db.js';
@@ -37,8 +38,8 @@ export async function fetchNewPayments(since: string): Promise<mysql.RowDataPack
   const opCol = hasNumeroOperacion ? 'pm.numero_operacion' : 'NULL';
   return executeReadOnlyQuery<mysql.RowDataPacket[]>(
     `SELECT pm.pago_id,
+            pm.fecha_pago,
             DATE_FORMAT(pm.fecha_pago, '%Y-%m-%d %H:%i:%s') AS fecha_raw,
-            DATE_FORMAT(pm.fecha_pago, '%d/%m/%Y %h:%i %p') AS fecha_txt,
             pm.mes, pm.\`${colYear}\` AS anio, pm.monto, pm.metodo_pago,
             ${opCol} AS numero_operacion, pm.comprobante_url,
             a.dni, a.apoderado,
@@ -64,7 +65,14 @@ function buildAlert(r: mysql.RowDataPacket): { text: string; keyboard: InlineKey
   if (r.numero_operacion) {
     text += `🔢 <b>Nº Operación:</b> <code>${escapeHtml(String(r.numero_operacion))}</code>\n`;
   }
-  if (r.fecha_txt) text += `🕒 <b>Hora:</b> ${r.fecha_txt}\n`;
+
+  let fechaTxt = '';
+  if (r.fecha_pago) {
+    fechaTxt = DateTime.fromJSDate(new Date(r.fecha_pago))
+      .setZone('America/Lima')
+      .toFormat('dd/MM/yyyy hh:mm a');
+  }
+  if (fechaTxt) text += `🕒 <b>Hora:</b> ${fechaTxt}\n`;
   text += `\n<i>Pendiente de verificación en el panel de Jaguares.</i>`;
 
   const kb = new InlineKeyboard();
