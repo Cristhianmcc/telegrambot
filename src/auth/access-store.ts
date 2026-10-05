@@ -15,6 +15,7 @@ export interface NotificationOptions {
   includeDebts: boolean;        // 🚨 Cobranzas Pendientes
   includeCapacity: boolean;     // 🏟️ Cupos y Capacidad
   includeNewStudents: boolean;  // 🆕 Nuevas Matrículas
+  includePaymentAlerts: boolean; // 🔔 Alerta inmediata de pagos nuevos
 }
 
 export const DEFAULT_NOTIFICATION_OPTIONS: NotificationOptions = {
@@ -22,7 +23,8 @@ export const DEFAULT_NOTIFICATION_OPTIONS: NotificationOptions = {
   includeIncome: true,
   includeDebts: true,
   includeCapacity: false,
-  includeNewStudents: true
+  includeNewStudents: true,
+  includePaymentAlerts: true
 };
 
 export interface Membership {
@@ -184,9 +186,8 @@ class AccessStore {
   ): NotificationOptions {
     const m = this.data.memberships[telegramUserId.toString()];
     if (m) {
-      if (!m.notificationOptions) {
-        m.notificationOptions = { ...DEFAULT_NOTIFICATION_OPTIONS };
-      }
+      // Completar claves nuevas para configuraciones guardadas antes de que existieran
+      m.notificationOptions = { ...DEFAULT_NOTIFICATION_OPTIONS, ...(m.notificationOptions || {}) };
       m.notificationOptions[key] = !m.notificationOptions[key];
       this.save();
       return m.notificationOptions;

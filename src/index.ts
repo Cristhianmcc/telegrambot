@@ -3,6 +3,7 @@ import { createBot, registerBotSlashCommands } from './bot/bot.js';
 import { getJaguaresPool } from './connectors/jaguares/jaguares-db.js';
 import { initLLMClient } from './llm/llm-router.js';
 import { initDailyDigestScheduler } from './scheduler/daily-digest.js';
+import { initPaymentWatcher } from './scheduler/payment-watcher.js';
 
 async function bootstrap() {
   console.log('🐆 Iniciando Bot Empresarial de Telegram (Módulo Escuela Jaguares)...');
@@ -38,6 +39,9 @@ async function bootstrap() {
 
   // Iniciar programador de reportes automáticos (Daily Digest)
   initDailyDigestScheduler(bot);
+
+  // Vigilante de pagos nuevos (alerta inmediata)
+  initPaymentWatcher(bot);
 
   console.log('🚀 Bot de Telegram iniciado en modo polling.');
   console.log('📱 Abre tu bot en Telegram y escribe /start o "¿Cómo está la escuela?"');

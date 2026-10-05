@@ -109,6 +109,7 @@ export function createBot(token: string): Bot {
       `• 🆕 Nuevas Matrículas: ${opts.includeNewStudents ? '✅ <i>Incluido</i>' : '❌ <i>Omitido</i>'}\n\n` +
       `⏰ <b>Horario programado:</b> ${hour} Perú\n` +
       `📊 <b>Estado de entrega:</b> ${statusBadge}\n\n` +
+      `🔔 <b>Alerta inmediata de pagos:</b> ${opts.includePaymentAlerts ? '✅ <i>Activa</i> (te aviso apenas suban un comprobante)' : '❌ <i>Pausada</i>'}\n\n` +
       `👇 <i>Toca los botones para activar/desactivar cada tema:</i>`;
 
     const kb = new InlineKeyboard()
@@ -119,6 +120,7 @@ export function createBot(token: string): Bot {
       .text(opts.includeCapacity ? '🏟️ Cupos: ✅' : '🏟️ Cupos: ❌', 'notif_tog_capacity')
       .row()
       .text(opts.includeNewStudents ? '🆕 Nuevos: ✅' : '🆕 Nuevos: ❌', 'notif_tog_newstudents')
+      .text(opts.includePaymentAlerts ? '🔔 Alerta pagos: ✅' : '🔔 Alerta pagos: ❌', 'notif_tog_payments')
       .row()
       .text(`⏰ Cambiar Hora (${hour})`, 'notif_pick_hour')
       .text('🚀 Probar envío ahora', 'notif_test_now')
@@ -784,6 +786,13 @@ export function createBot(token: string): Bot {
   bot.callbackQuery('notif_tog_newstudents', async (ctx) => {
     const opts = accessStore.toggleNotificationOption(ctx.from.id, 'includeNewStudents');
     await ctx.answerCallbackQuery({ text: opts.includeNewStudents ? '🆕 Nuevos Alumnos: Activado' : '🆕 Nuevos Alumnos: Omitido' });
+    const view = getNotificationsView(ctx.from.id);
+    await ctx.editMessageText(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+  });
+
+  bot.callbackQuery('notif_tog_payments', async (ctx) => {
+    const opts = accessStore.toggleNotificationOption(ctx.from.id, 'includePaymentAlerts');
+    await ctx.answerCallbackQuery({ text: opts.includePaymentAlerts ? '🔔 Alerta de pagos: Activada' : '🔕 Alerta de pagos: Pausada' });
     const view = getNotificationsView(ctx.from.id);
     await ctx.editMessageText(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
   });
