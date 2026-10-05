@@ -92,6 +92,10 @@ async function tick(bot: Bot): Promise<void> {
     // Primera ejecución: fijar la marca sin avisar pagos antiguos
     if (watermark === null) {
       watermark = (await readMaxFechaPago()) ?? '1970-01-01 00:00:00';
+      const existingAtWatermark = await fetchNewPayments(watermark);
+      for (const r of existingAtWatermark) {
+        seenAtWatermark.add(r.pago_id);
+      }
       return;
     }
 
