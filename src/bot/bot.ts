@@ -17,6 +17,7 @@ import {
   escapeHtml
 } from '../rendering/jaguares-templates.js';
 import { transcribeAudioUrl } from '../audio/transcription.js';
+import { fetchImageBuffer } from '../utils/image-fetcher.js';
 import { resolvePeriod } from '../date-resolver/date-resolver.js';
 import { getChatHistory, addChatMessage, clearChatHistory } from './conversation-memory.js';
 import { accessStore } from '../auth/access-store.js';
@@ -246,14 +247,17 @@ export function createBot(token: string): Bot {
         const view = renderVoucherDetail(v);
         let sentWithPhoto = false;
 
-        if (v.comprobanteUrl && (v.comprobanteUrl.endsWith('.jpg') || v.comprobanteUrl.endsWith('.jpeg') || v.comprobanteUrl.endsWith('.png') || v.comprobanteUrl.endsWith('.webp') || v.comprobanteUrl.includes('uploads'))) {
+        if (v.comprobanteUrl) {
           try {
-            await ctx.replyWithPhoto(v.comprobanteUrl, {
-              caption: view.text,
-              parse_mode: 'HTML',
-              reply_markup: view.keyboard
-            });
-            sentWithPhoto = true;
+            const imageInfo = await fetchImageBuffer(v.comprobanteUrl);
+            if (imageInfo) {
+              await ctx.replyWithPhoto(new InputFile(imageInfo.buffer, 'comprobante.jpg'), {
+                caption: view.text,
+                parse_mode: 'HTML',
+                reply_markup: view.keyboard
+              });
+              sentWithPhoto = true;
+            }
           } catch {
             sentWithPhoto = false;
           }
