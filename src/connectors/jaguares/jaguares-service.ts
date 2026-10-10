@@ -12,7 +12,10 @@ import {
   JagRecentStudent,
   JagStudentDetail,
   JagVoucherDetail,
-  JagAsistenciasAlumno
+  JagAsistenciasAlumno,
+  JagDocenteClaseAsistencia,
+  JagDocentesControlResumen,
+  JagDocenteAlumnosClase
 } from '../../contracts/jaguares.js';
 import { ResolvedPeriod } from '../../contracts/date.js';
 
@@ -670,6 +673,186 @@ export class JaguaresService {
         categoria: r.categoria
       })),
       resumen: { total, presentes, ausentes: total - presentes, puerta_ok: puertaOk, sin_puerta: total - puertaOk }
+    };
+  }
+
+  /**
+   * Control de asistencia de docentes: quiénes ya pasaron lista y quiénes faltan en una fecha.
+   */
+  async getDocentesControl(targetFecha?: string): Promise<JagDocentesControlResumen> {
+    const tz = 'America/Lima';
+    const now = DateTime.now().setZone(tz);
+    const fecha = targetFecha || now.toFormat('yyyy-MM-dd');
+    const dt = DateTime.fromFormat(fecha, 'yyyy-MM-dd', { zone: tz });
+
+    const diasSemanaMap = [
+      'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO', 'DOMINGO'
+    ];
+    const diasNombresEs = [
+      'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'
+    ];
+    const diaIndex = (dt.isValid ? dt.weekday : now.weekday) - 1;
+    const diaDb = diasSemanaMap[diaIndex];
+    const diaNombre = diasNombresEs[diaIndex];
+
+    // 1. Clases donde un docente YA pasó lista en esa fecha
+    const sqlPasaron = `
+      SELECT 
+        adm.admin_id,
+        adm.nombre_completo AS profesor,
+        d.nombre AS deporte,
+        h.horario_id,
+        h.dia,
+        TIME_FORMAT(h.hora_inicio, '%H:%i') AS hora_inicio,
+        TIME_FORMAT(h.hora_fin, '%H:%i')     AS hora_fin,
+        COALESCE(h.categoria, 'General')     AS categoria,
+        COUNT(ast.asistencia_id)             AS total_alumnos,
+        SUM(CASE WHEN ast.presente = 1 THEN 1 ELSE 0 END) AS presentes,
+        SUM(CASE WHEN ast.presente = 0 THEN 1 ELSE 0 END) AS ausentes,
+        SUM(CASE WHEN ast.asistencia_puerta = 1 THEN 1 ELSE 0 END) AS puerta_ok
+      FROM asistencias ast
+      JOIN administradores adm ON ast.registrado_por = adm.admin_id
+      JOIN horarios h ON ast.horario_id = h.horario_id
+      JOIN deportes d ON h.deporte_id = d.deporte_id
+      WHERE ast.fecha = ?
+      GROUP BY adm.admin_id, adm.nombre_completo, d.nombre, h.horario_id, h.dia, h.hora_inicio, h.hora_fin, h.categoria
+      ORDER BY h.hora_inicio, adm.nombre_completo
+    `;
+    const rowsPasaron = await executeReadOnlyQuery<mysql.RowDataPacket[]>(sqlPasaron, [fecha]);
+
+    const pasaronLista: JagDocenteClaseAsistencia[] = rowsPasaron.map((r) => ({
+      admin_id: Number(r.admin_id),
+      profesor: r.profesor,
+      deporte: r.deporte,
+      horario_id: Number(r.horario_id),
+      dia: r.dia,
+      hora_inicio: r.hora_inicio,
+      hora_fin: r.hora_fin,
+      categoria: r.categoria,
+      total_alumnos: Number(r.total_alumnos),
+      presentes: Number(r.presentes),
+      ausentes: Number(r.ausentes),
+      puerta_ok: Number(r.puerta_ok),
+      ya_paso_lista: true
+    }));
+
+    const horariosListos = new Set(pasaronLista.map((p) => p.horario_id));
+
+    // 2. Clases programadas para ese día con docentes asignados que AÚN NO pasan lista
+    const sqlPendientes = `
+      SELECT 
+        adm.admin_id,
+        adm.nombre_completo AS profesor,
+        d.nombre AS deporte,
+        h.horario_id,
+        h.dia,
+        TIME_FORMAT(h.hora_inicio, '%H:%i') AS hora_inicio,
+        TIME_FORMAT(h.hora_fin, '%H:%i')     AS hora_fin,
+        COALESCE(h.categoria, 'General')     AS categoria,
+        COALESCE(COUNT(DISTINCT CASE WHEN i.estado = 'activa' THEN ih.inscripcion_id END), 0) AS total_alumnos
+      FROM profesor_deportes pd
+      JOIN administradores adm ON pd.admin_id = adm.admin_id
+      JOIN horarios h ON pd.horario_id = h.horario_id
+      JOIN deportes d ON pd.deporte_id = d.deporte_id
+      LEFT JOIN inscripcion_horarios ih ON ih.horario_id = h.horario_id
+      LEFT JOIN inscripciones i ON i.inscripcion_id = ih.inscripcion_id
+      WHERE (UPPER(h.dia) = ? OR UPPER(h.dia) LIKE CONCAT(?, '%'))
+        AND adm.estado = 'activo'
+      GROUP BY adm.admin_id, adm.nombre_completo, d.nombre, h.horario_id, h.dia, h.hora_inicio, h.hora_fin, h.categoria
+      ORDER BY h.hora_inicio, adm.nombre_completo
+    `;
+    const rowsPendientes = await executeReadOnlyQuery<mysql.RowDataPacket[]>(sqlPendientes, [diaDb, diaDb]);
+
+    const pendientes: JagDocenteClaseAsistencia[] = rowsPendientes
+      .filter((r) => !horariosListos.has(Number(r.horario_id)))
+      .map((r) => ({
+        admin_id: Number(r.admin_id),
+        profesor: r.profesor,
+        deporte: r.deporte,
+        horario_id: Number(r.horario_id),
+        dia: r.dia,
+        hora_inicio: r.hora_inicio,
+        hora_fin: r.hora_fin,
+        categoria: r.categoria,
+        total_alumnos: Number(r.total_alumnos),
+        presentes: 0,
+        ausentes: 0,
+        puerta_ok: 0,
+        ya_paso_lista: false
+      }));
+
+    const [countDocentes] = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
+      "SELECT COUNT(*) AS total FROM administradores WHERE rol = 'profesor' AND estado = 'activo'"
+    );
+
+    return {
+      fecha,
+      diaNombre,
+      pasaronLista,
+      pendientes,
+      totalDocentesActivos: Number(countDocentes?.total || 0)
+    };
+  }
+
+  /**
+   * Lista detallada de asistencias de alumnos para una clase/horario y fecha específica.
+   */
+  async getAsistenciasDocenteClase(horarioId: number, targetFecha?: string): Promise<JagDocenteAlumnosClase | null> {
+    const tz = 'America/Lima';
+    const fecha = targetFecha || DateTime.now().setZone(tz).toFormat('yyyy-MM-dd');
+
+    const sql = `
+      SELECT 
+        a.alumno_id,
+        a.dni,
+        CONCAT(a.nombres, ' ', a.apellido_paterno, ' ', COALESCE(a.apellido_materno, '')) AS nombre_completo,
+        d.nombre AS deporte,
+        COALESCE(h.categoria, 'General') AS categoria,
+        CONCAT(TIME_FORMAT(h.hora_inicio, '%H:%i'), ' - ', TIME_FORMAT(h.hora_fin, '%H:%i')) AS horario,
+        COALESCE(adm.nombre_completo, 'Docente') AS profesor,
+        ast.presente,
+        COALESCE(ast.asistencia_puerta, 0) AS asistencia_puerta,
+        TIME_FORMAT(ast.hora_puerta, '%H:%i') AS hora_puerta,
+        ast.observaciones
+      FROM asistencias ast
+      JOIN alumnos a ON ast.alumno_id = a.alumno_id
+      JOIN horarios h ON ast.horario_id = h.horario_id
+      JOIN deportes d ON h.deporte_id = d.deporte_id
+      LEFT JOIN administradores adm ON ast.registrado_por = adm.admin_id
+      WHERE ast.horario_id = ? AND ast.fecha = ?
+      ORDER BY a.apellido_paterno, a.nombres
+    `;
+    const rows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(sql, [horarioId, fecha]);
+    if (!rows.length) return null;
+
+    const first = rows[0];
+    const total = rows.length;
+    const presentes = rows.filter((r) => r.presente === 1 || r.presente === true).length;
+    const puertaOk = rows.filter(
+      (r) => r.asistencia_puerta === 1 || r.asistencia_puerta === true || r.asistencia_puerta === '1'
+    ).length;
+
+    return {
+      profesor: first.profesor,
+      deporte: first.deporte,
+      categoria: first.categoria,
+      horario: first.horario,
+      fecha,
+      alumnos: rows.map((r) => ({
+        alumno_id: Number(r.alumno_id),
+        dni: r.dni,
+        nombre_completo: r.nombre_completo.trim(),
+        presente: r.presente === 1 || r.presente === true,
+        asistencia_puerta: r.asistencia_puerta === 1 || r.asistencia_puerta === true || r.asistencia_puerta === '1',
+        hora_puerta: r.hora_puerta || undefined,
+        observaciones: r.observaciones || undefined
+      })),
+      resumen: {
+        total,
+        presentes,
+        ausentes: total - presentes,
+        puerta_ok: puertaOk
+      }
     };
   }
 }

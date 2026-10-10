@@ -165,3 +165,54 @@ export interface JagAsistenciasAlumno {
     sin_puerta: number;
   };
 }
+
+/** Clase o horario asignado a un docente con estado de asistencia */
+export interface JagDocenteClaseAsistencia {
+  admin_id: number;
+  profesor: string;
+  deporte: string;
+  horario_id: number;
+  dia: string;
+  hora_inicio: string;
+  hora_fin: string;
+  categoria: string;
+  total_alumnos: number;
+  presentes: number;
+  ausentes: number;
+  puerta_ok: number;
+  ya_paso_lista: boolean;
+}
+
+/** Resumen de control de asistencia de docentes para un día */
+export interface JagDocentesControlResumen {
+  fecha: string;       // YYYY-MM-DD
+  diaNombre: string;   // ej: 'Viernes'
+  pasaronLista: JagDocenteClaseAsistencia[];
+  pendientes: JagDocenteClaseAsistencia[];
+  totalDocentesActivos: number;
+}
+
+/** Detalle de alumnos de la clase de un docente */
+export interface JagDocenteAlumnosClase {
+  profesor: string;
+  deporte: string;
+  categoria: string;
+  horario: string;
+  fecha: string;
+  alumnos: Array<{
+    alumno_id: number;
+    dni: string;
+    nombre_completo: string;
+    presente: boolean;
+    asistencia_puerta: boolean;
+    hora_puerta?: string;
+    observaciones?: string;
+  }>;
+  resumen: {
+    total: number;
+    presentes: number;
+    ausentes: number;
+    puerta_ok: number;
+  };
+}
+

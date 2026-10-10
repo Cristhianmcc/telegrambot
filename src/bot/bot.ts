@@ -1,4 +1,5 @@
 import { Bot, InlineKeyboard, InputFile } from 'grammy';
+import { DateTime } from 'luxon';
 import { routeMessage } from '../pipeline/rule-router.js';
 import { routeMessageWithLLM } from '../llm/llm-router.js';
 import { jaguaresService } from '../connectors/jaguares/jaguares-service.js';
@@ -14,6 +15,8 @@ import {
   renderStudentDetail,
   renderVoucherDetail,
   renderAsistenciasAlumno,
+  renderDocentesControl,
+  renderDocenteAlumnosClase,
   markdownToTelegramHtml,
   escapeHtml
 } from '../rendering/jaguares-templates.js';
@@ -34,6 +37,7 @@ export const BOT_SLASH_COMMANDS = [
   { command: 'menu', description: '📋 Menú interactivo principal' },
   { command: 'buscar', description: '🔍 Buscar alumno y WhatsApp de cobranza' },
   { command: 'asistencias', description: '📅 Ver historial de asistencias de un alumno (DNI)' },
+  { command: 'docentes', description: '👨‍🏫 Control de docentes y toma de asistencia' },
   { command: 'comprobantes', description: '📸 Ver vouchers y comprobantes Yape/Plin' },
   { command: 'resumen', description: '🎓 Resumen general de la escuela' },
   { command: 'alumnos', description: '👥 Alumnos activos y por disciplina' },
@@ -77,6 +81,7 @@ export function createBot(token: string): Bot {
       .text('📅 Asistencias', 'action_prompt_asistencias')
       .row()
       .text('📸 Vouchers Yape/Plin', 'action_vouchers')
+      .text('👨‍🏫 Control Docentes', 'action_docentes_control')
       .row()
       .text('📊 Reportes Excel (.xlsx)', 'excel_menu')
       .text('⏰ Alertas y Notificaciones', 'notif_menu');
@@ -471,29 +476,80 @@ export function createBot(token: string): Bot {
     await handleStudentSearch(ctx, term);
   });
 
-  // /asistencias <dni>
+  // /asistencias <dni o fecha>
   bot.command('asistencias', async (ctx) => {
-    const dni = ctx.match?.trim() || '';
-    if (!dni || !/^\d{8}$/.test(dni)) {
+    const rawArgs = ctx.match?.trim() || '';
+    if (!rawArgs) {
       await ctx.reply(
-        `📅 <b>Asistencias por DNI</b>\n\n` +
-        `Indica el DNI del alumno (8 dígitos):\n` +
-        `Ejemplo: <code>/asistencias 74859612</code>`,
+        `📅 <b>Historial de Asistencias</b>\n\n` +
+        `• <b>Por DNI del alumno:</b> <code>/asistencias 74859612</code>\n` +
+        `• <b>Por fecha o lenguaje natural:</b> escribe directamente en el chat:\n` +
+        `  <i>"¿Cuáles fueron las asistencias de ayer?"</i>\n` +
+        `  <i>"¿Quiénes asistieron hoy?"</i>\n` +
+        `  <i>"Asistencias de fútbol del viernes"</i>`,
         { parse_mode: 'HTML' }
       );
       return;
     }
+
+    // Si es DNI de 8 dígitos
+    if (/^\d{8}$/.test(rawArgs)) {
+      const dni = rawArgs;
+      await ctx.replyWithChatAction('typing');
+      try {
+        const data = await jaguaresService.getAsistenciasAlumno(dni);
+        if (!data) {
+          await ctx.reply(`⚠️ No se encontró ningún alumno con DNI <code>${escapeHtml(dni)}</code>.`, { parse_mode: 'HTML' });
+          return;
+        }
+        const view = renderAsistenciasAlumno(data, 0);
+        await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+      } catch (err: any) {
+        await ctx.reply(`⚠️ Error al consultar asistencias: ${err.message}`);
+      }
+      return;
+    }
+
+    // Si escribieron una fecha o término (ej: "ayer", "hoy", "2026-10-09")
     await ctx.replyWithChatAction('typing');
     try {
-      const data = await jaguaresService.getAsistenciasAlumno(dni);
-      if (!data) {
-        await ctx.reply(`⚠️ No se encontró ningún alumno con DNI <code>${escapeHtml(dni)}</code>.`, { parse_mode: 'HTML' });
-        return;
+      const match = await routeMessageWithLLM(`asistencias de ${rawArgs}`, {
+        timezone: 'America/Lima',
+        now: new Date()
+      });
+      if (match && match.slots.directResponse) {
+        const html = markdownToTelegramHtml(match.slots.directResponse);
+        await ctx.reply(html, { parse_mode: 'HTML' });
+      } else {
+        await ctx.reply(
+          `Indica un DNI de 8 dígitos (ej: <code>/asistencias 74859612</code>) o pregúntame en el chat: <i>"¿Cuáles fueron las asistencias de ayer?"</i>`,
+          { parse_mode: 'HTML' }
+        );
       }
-      const view = renderAsistenciasAlumno(data, 0);
-      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
     } catch (err: any) {
       await ctx.reply(`⚠️ Error al consultar asistencias: ${err.message}`);
+    }
+  });
+
+  // /docentes [fecha o ayer]
+  bot.command(['docentes', 'profesores'], async (ctx) => {
+    const rawArgs = ctx.match?.trim() || '';
+    await ctx.replyWithChatAction('typing');
+    try {
+      let targetFecha: string | undefined = undefined;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(rawArgs)) {
+        targetFecha = rawArgs;
+      } else if (rawArgs.toLowerCase() === 'ayer') {
+        targetFecha = DateTime.now().setZone('America/Lima').minus({ days: 1 }).toFormat('yyyy-MM-dd');
+      } else if (rawArgs.toLowerCase() === 'hoy') {
+        targetFecha = DateTime.now().setZone('America/Lima').toFormat('yyyy-MM-dd');
+      }
+
+      const data = await jaguaresService.getDocentesControl(targetFecha);
+      const view = renderDocentesControl(data);
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar control de docentes: ${err.message}`);
     }
   });
 
@@ -719,6 +775,49 @@ export function createBot(token: string): Bot {
       await ctx.editMessageText(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
     } catch (err: any) {
       await ctx.reply(`⚠️ Error al paginar asistencias: ${err.message}`);
+    }
+  });
+
+  // --- CALLBACK MENÚ → CONTROL DE DOCENTES ---
+  bot.callbackQuery('action_docentes_control', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try {
+      const data = await jaguaresService.getDocentesControl();
+      const view = renderDocentesControl(data);
+      await ctx.editMessageText(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar control de docentes: ${err.message}`);
+    }
+  });
+
+  // --- CALLBACK ACTUALIZAR CONTROL DOCENTES POR FECHA ---
+  bot.callbackQuery(/^doc_control_(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const fecha = ctx.match[1];
+    try {
+      const data = await jaguaresService.getDocentesControl(fecha);
+      const view = renderDocentesControl(data);
+      await ctx.editMessageText(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al actualizar control de docentes: ${err.message}`);
+    }
+  });
+
+  // --- CALLBACK VER LISTA DE ALUMNOS DE UNA CLASE / DOCENTE ---
+  bot.callbackQuery(/^doc_clase_(\d+)_(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const horarioId = parseInt(ctx.match[1], 10);
+    const fecha = ctx.match[2];
+    try {
+      const data = await jaguaresService.getAsistenciasDocenteClase(horarioId, fecha);
+      if (!data) {
+        await ctx.reply('⚠️ No se encontraron asistencias registradas para esta clase en esa fecha.');
+        return;
+      }
+      const view = renderDocenteAlumnosClase(data);
+      await ctx.editMessageText(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al ver lista de clase: ${err.message}`);
     }
   });
 
@@ -1019,7 +1118,7 @@ export function createBot(token: string): Bot {
     }
 
     if (!match) {
-      match = await routeMessageWithLLM(rawText, { history });
+      match = await routeMessageWithLLM(rawText, { history, timezone: 'America/Lima', now: new Date() });
     }
 
     if (!match) {

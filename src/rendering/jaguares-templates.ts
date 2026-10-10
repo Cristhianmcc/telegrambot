@@ -10,7 +10,9 @@ import {
   JagRecentStudent,
   JagStudentDetail,
   JagVoucherDetail,
-  JagAsistenciasAlumno
+  JagAsistenciasAlumno,
+  JagDocentesControlResumen,
+  JagDocenteAlumnosClase
 } from '../contracts/jaguares.js';
 
 export function escapeHtml(str: string): string {
@@ -438,3 +440,87 @@ export function renderAsistenciasAlumno(
 
   return { text, keyboard: kb };
 }
+
+/**
+ * Renderiza el panel de control de asistencia de docentes (quiénes pasaron lista y quiénes faltan).
+ */
+export function renderDocentesControl(
+  data: JagDocentesControlResumen
+): { text: string; keyboard: InlineKeyboard } {
+  let text = `👨‍🏫 <b>Control de Asistencia de Docentes</b>\n`;
+  text += `📅 <b>${escapeHtml(data.diaNombre)}, ${escapeHtml(data.fecha)}</b>\n`;
+  text += `👥 Docentes activos en la escuela: <b>${data.totalDocentesActivos}</b>\n\n`;
+
+  // 1. Clases donde ya pasaron lista
+  if (data.pasaronLista.length > 0) {
+    text += `✅ <b>Ya pasaron lista (${data.pasaronLista.length}):</b>\n`;
+    for (const c of data.pasaronLista) {
+      text += `• <b>${escapeHtml(c.profesor)}</b>\n`;
+      text += `  🏅 ${escapeHtml(c.deporte)} (${escapeHtml(c.categoria)}) · ⏰ ${c.hora_inicio} – ${c.hora_fin}\n`;
+      text += `  📊 <b>${c.total_alumnos}</b> alumnos · 👨‍🏫 <b>${c.presentes}</b> presentes · 🚪 <b>${c.puerta_ok}</b> puerta\n\n`;
+    }
+  } else {
+    text += `ℹ️ <i>Aún ningún docente ha registrado lista para esta fecha.</i>\n\n`;
+  }
+
+  // 2. Clases pendientes de pasar lista
+  if (data.pendientes.length > 0) {
+    text += `⏳ <b>Pendientes de pasar lista (${data.pendientes.length}):</b>\n`;
+    for (const c of data.pendientes) {
+      text += `• <b>${escapeHtml(c.profesor)}</b>\n`;
+      text += `  🏅 ${escapeHtml(c.deporte)} (${escapeHtml(c.categoria)}) · ⏰ ${c.hora_inicio} – ${c.hora_fin}\n`;
+      text += `  👥 ~${c.total_alumnos} inscritos · ⚠️ <i>Sin lista aún</i>\n\n`;
+    }
+  } else if (data.pasaronLista.length > 0) {
+    text += `🎉 <i>¡Todos los docentes programados para hoy ya pasaron lista!</i>\n\n`;
+  }
+
+  const kb = new InlineKeyboard();
+  // Botones para ver alumnos de las clases que ya pasaron lista (máximo 4 botones directos)
+  const buttonsClase = data.pasaronLista.slice(0, 4);
+  for (const c of buttonsClase) {
+    const profShort = c.profesor.split(' ')[0] || c.profesor;
+    kb.text(`📋 Ver lista: ${profShort} (${c.hora_inicio})`, `doc_clase_${c.horario_id}_${data.fecha}`).row();
+  }
+  kb.text('🔄 Actualizar', `doc_control_${data.fecha}`).text('🔙 Menú', 'action_back_menu');
+
+  return { text, keyboard: kb };
+}
+
+/**
+ * Renderiza la lista completa de alumnos evaluados en una clase por un docente.
+ */
+export function renderDocenteAlumnosClase(
+  data: JagDocenteAlumnosClase
+): { text: string; keyboard: InlineKeyboard } {
+  let text = `📋 <b>Lista de Clase · ${escapeHtml(data.profesor)}</b>\n`;
+  text += `🏅 <b>${escapeHtml(data.deporte)}</b> (${escapeHtml(data.categoria)}) · ⏰ <b>${data.horario}</b>\n`;
+  text += `📅 Fecha: <b>${escapeHtml(data.fecha)}</b>\n\n`;
+
+  text += `📊 <b>Resumen:</b>\n`;
+  text += `• Total alumnos: <b>${data.resumen.total}</b>\n`;
+  text += `• 👨‍🏫 Presentes (docente): <b>${data.resumen.presentes}</b>\n`;
+  text += `• 🚪 Ingresos por puerta (carnet): <b>${data.resumen.puerta_ok}</b>\n`;
+  text += `• ❌ Ausentes: <b>${data.resumen.ausentes}</b>\n\n`;
+
+  text += `👥 <b>Alumnos registrados:</b>\n`;
+  data.alumnos.forEach((a, idx) => {
+    const iconDoc = a.presente ? '👨‍🏫 Presente' : '❌ Falta';
+    const iconPuerta = a.asistencia_puerta
+      ? `🚪 Puerta (${a.hora_puerta || 'OK'})`
+      : '⛔ Sin puerta';
+    text += `${idx + 1}. <b>${escapeHtml(a.nombre_completo)}</b> (DNI: <code>${escapeHtml(a.dni)}</code>)\n`;
+    text += `   ${iconDoc} | ${iconPuerta}\n`;
+    if (a.observaciones) {
+      text += `   📝 <i>${escapeHtml(a.observaciones)}</i>\n`;
+    }
+  });
+
+  const kb = new InlineKeyboard()
+    .text('🔙 Volver a Control de Docentes', `doc_control_${data.fecha}`)
+    .row()
+    .text('🔙 Volver al Menú', 'action_back_menu');
+
+  return { text, keyboard: kb };
+}
+
