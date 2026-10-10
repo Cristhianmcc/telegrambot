@@ -11,7 +11,8 @@ import {
   JagEnrollments,
   JagRecentStudent,
   JagStudentDetail,
-  JagVoucherDetail
+  JagVoucherDetail,
+  JagAsistenciasAlumno
 } from '../../contracts/jaguares.js';
 import { ResolvedPeriod } from '../../contracts/date.js';
 
@@ -590,6 +591,88 @@ export class JaguaresService {
       };
     });
   }
+
+  /**
+   * Historial de asistencias de un alumno por DNI.
+   * Réplica de GET /api/admin/alumnos/:dni/asistencias (solo lectura).
+   */
+  async getAsistenciasAlumno(
+    dni: string,
+    fechaInicio?: string,
+    fechaFin?: string
+  ): Promise<JagAsistenciasAlumno | null> {
+    // 1. Buscar alumno
+    const alumnoRows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
+      'SELECT alumno_id, nombres, apellido_paterno, apellido_materno FROM alumnos WHERE dni = ?',
+      [dni]
+    );
+    if (!alumnoRows.length) return null;
+    const alumno = alumnoRows[0];
+
+    // 2. Construir query de asistencias
+    let sql = `
+      SELECT
+        DATE_FORMAT(ast.fecha, '%Y-%m-%d') AS fecha,
+        ast.presente,
+        COALESCE(ast.asistencia_puerta, 0) AS asistencia_puerta,
+        TIME_FORMAT(ast.hora_puerta, '%H:%i') AS hora_puerta,
+        ast.observaciones,
+        d.nombre AS deporte,
+        h.dia,
+        TIME_FORMAT(h.hora_inicio, '%H:%i') AS hora_inicio,
+        TIME_FORMAT(h.hora_fin, '%H:%i')     AS hora_fin,
+        h.categoria
+      FROM asistencias ast
+      JOIN horarios h ON ast.horario_id = h.horario_id
+      JOIN deportes d ON h.deporte_id = d.deporte_id
+      WHERE ast.alumno_id = ?
+    `;
+    const params: (string | number)[] = [alumno.alumno_id];
+
+    if (fechaInicio && fechaFin) {
+      sql += ' AND ast.fecha BETWEEN ? AND ?';
+      params.push(fechaInicio, fechaFin);
+    } else if (fechaInicio) {
+      sql += ' AND ast.fecha >= ?';
+      params.push(fechaInicio);
+    } else if (fechaFin) {
+      sql += ' AND ast.fecha <= ?';
+      params.push(fechaFin);
+    }
+    sql += ' ORDER BY ast.fecha DESC, d.nombre LIMIT 300';
+
+    const registros = await executeReadOnlyQuery<mysql.RowDataPacket[]>(sql, params);
+
+    const total = registros.length;
+    const presentes = registros.filter((r) => r.presente === 1 || r.presente === true).length;
+    const puertaOk = registros.filter(
+      (r) => r.asistencia_puerta === 1 || r.asistencia_puerta === true || r.asistencia_puerta === '1'
+    ).length;
+
+    return {
+      alumno: {
+        alumno_id: alumno.alumno_id,
+        nombres: alumno.nombres,
+        apellido_paterno: alumno.apellido_paterno,
+        apellido_materno: alumno.apellido_materno,
+        dni
+      },
+      asistencias: registros.map((r) => ({
+        fecha: r.fecha,
+        presente: r.presente === 1 || r.presente === true,
+        asistencia_puerta: r.asistencia_puerta === 1 || r.asistencia_puerta === true || r.asistencia_puerta === '1',
+        hora_puerta: r.hora_puerta || undefined,
+        observaciones: r.observaciones || undefined,
+        deporte: r.deporte,
+        dia: r.dia,
+        hora_inicio: r.hora_inicio,
+        hora_fin: r.hora_fin,
+        categoria: r.categoria
+      })),
+      resumen: { total, presentes, ausentes: total - presentes, puerta_ok: puertaOk, sin_puerta: total - puertaOk }
+    };
+  }
 }
 
 export const jaguaresService = new JaguaresService();
+

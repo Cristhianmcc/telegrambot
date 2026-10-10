@@ -9,7 +9,8 @@ import {
   JagEnrollments,
   JagRecentStudent,
   JagStudentDetail,
-  JagVoucherDetail
+  JagVoucherDetail,
+  JagAsistenciasAlumno
 } from '../contracts/jaguares.js';
 
 export function escapeHtml(str: string): string {
@@ -326,6 +327,114 @@ export function renderVoucherDetail(v: JagVoucherDetail): { text: string; keyboa
   }
 
   kb.text('🔙 Volver', 'action_back_menu');
+
+  return { text, keyboard: kb };
+}
+
+/**
+ * Renderiza el historial de asistencias de un alumno.
+ * Muestra AMBAS fuentes: asistencia del docente (presente) y asistencia de puerta.
+ *
+ * Casos por registro:
+ *   presente=1 & puerta=1 → ✅ Docente + 🚦 Puerta
+ *   presente=1 & puerta=0 → ✅ Docente · sin registro puerta
+ *   presente=0 & puerta=1 → 🚦 Puerta · ❌ Ausente (docente)
+ *   presente=0 & puerta=0 → ❌ Ausente
+ */
+export function renderAsistenciasAlumno(
+  data: JagAsistenciasAlumno,
+  page: number = 0
+): { text: string; keyboard: InlineKeyboard } {
+  const nombreCompleto = `${data.alumno.nombres} ${data.alumno.apellido_paterno} ${data.alumno.apellido_materno}`.trim();
+
+  // Paginación: 10 registros por página
+  const PAGE_SIZE = 10;
+  const totalPages = Math.max(1, Math.ceil(data.asistencias.length / PAGE_SIZE));
+  const safePage = Math.min(Math.max(0, page), totalPages - 1);
+  const slice = data.asistencias.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+
+  const { total, presentes, ausentes, puerta_ok } = data.resumen;
+
+  // Presentes SIN registro de puerta y Puerta SIN marcación del docente
+  const soloDocente   = data.asistencias.filter(r =>  r.presente && !r.asistencia_puerta).length;
+  const soloPuerta    = data.asistencias.filter(r => !r.presente &&  r.asistencia_puerta).length;
+  const ambos         = data.asistencias.filter(r =>  r.presente &&  r.asistencia_puerta).length;
+
+  const pct = total > 0 ? Math.round((presentes / total) * 100) : 0;
+
+  // Barra de asistencia visual (10 bloques)
+  const barFill = Math.round(pct / 10);
+  const bar = '█'.repeat(barFill) + '░'.repeat(10 - barFill);
+
+  let text = `📋 <b>Asistencias · ${escapeHtml(nombreCompleto)}</b>\n`;
+  text += `<code>DNI: ${escapeHtml(data.alumno.dni)}</code>\n\n`;
+
+  // --- Resumen ---
+  text += `📊 <b>Resumen general</b>\n`;
+  text += `<code>${bar}</code> <b>${pct}%</b> de asistencia\n\n`;
+
+  text += `🏫 <b>Registro del docente:</b>\n`;
+  text += `  ✅ Presente: <b>${presentes}</b>  ❌ Ausente: <b>${ausentes}</b>  (Total: ${total})\n\n`;
+
+  text += `🚦 <b>Registro de puerta:</b>\n`;
+  if (puerta_ok > 0) {
+    text += `  ✅ Ingresaron: <b>${puerta_ok}</b>  \u274c Sin registro: <b>${total - puerta_ok}</b>\n`;
+  } else {
+    text += `  <i>Sin registros de puerta aún.</i>\n`;
+  }
+
+  if (ambos > 0 || soloDocente > 0 || soloPuerta > 0) {
+    text += `\n📌 <b>Combinaciones:</b>\n`;
+    if (ambos > 0)      text += `  ✅🚦 Docente + Puerta: <b>${ambos}</b>\n`;
+    if (soloDocente > 0) text += `  ✅　 Solo docente (sin puerta): <b>${soloDocente}</b>\n`;
+    if (soloPuerta > 0)  text += `  🚦❌ Puerta sí, docente no: <b>${soloPuerta}</b>\n`;
+  }
+
+  // --- Detalle de registros ---
+  if (slice.length === 0) {
+    text += `\n<i>Sin registros de asistencia aún.</i>\n`;
+  } else {
+    text += `\n<b>Últimas clases</b> (pág. ${safePage + 1}/${totalPages}):\n`;
+    for (const r of slice) {
+      // Formatear fecha YYYY-MM-DD → DD/MM/YYYY
+      const [y, m, d] = r.fecha.split('-');
+      const fechaFmt = `${d}/${m}/${y}`;
+
+      // Línea 1: fecha + deporte + categoría + horario
+      text += `<b>${fechaFmt}</b> · ${escapeHtml(r.deporte)} · <i>${escapeHtml(r.categoria)}</i>\n`;
+      text += `  ${escapeHtml(r.dia)} ${r.hora_inicio}–${r.hora_fin}\n`;
+
+      // Línea 2: estado del docente
+      const iconoDocente = r.presente ? '✅ Presente' : '❌ Ausente';
+      text += `  🏫 Docente: <b>${iconoDocente}</b>`;
+
+      // Línea 3: estado de puerta (en la misma línea, separado por ·)
+      if (r.asistencia_puerta) {
+        const horaStr = r.hora_puerta ? ` ${r.hora_puerta}` : '';
+        text += `  🚦 Puerta: <b>✅ Ingresó${horaStr}</b>`;
+      } else {
+        text += `  🚦 Puerta: <b>— No registrada</b>`;
+      }
+      text += `\n`;
+
+      if (r.observaciones) {
+        text += `  📝 <i>${escapeHtml(r.observaciones)}</i>\n`;
+      }
+      text += `\n`;
+    }
+  }
+
+  // Teclado de navegación
+  const kb = new InlineKeyboard();
+  const dniKey = data.alumno.dni;
+  if (safePage > 0) {
+    kb.text('⬅️ Anterior', `asist_page_${dniKey}_${safePage - 1}`);
+  }
+  if (safePage < totalPages - 1) {
+    kb.text('Siguiente ➡️', `asist_page_${dniKey}_${safePage + 1}`);
+  }
+  if (safePage > 0 || safePage < totalPages - 1) kb.row();
+  kb.text('🔙 Volver al Menú', 'action_back_menu');
 
   return { text, keyboard: kb };
 }

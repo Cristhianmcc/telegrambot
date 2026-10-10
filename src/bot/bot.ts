@@ -13,6 +13,7 @@ import {
   renderRecentStudents,
   renderStudentDetail,
   renderVoucherDetail,
+  renderAsistenciasAlumno,
   markdownToTelegramHtml,
   escapeHtml
 } from '../rendering/jaguares-templates.js';
@@ -32,6 +33,7 @@ import { sendDailyDigestToUser } from '../scheduler/daily-digest.js';
 export const BOT_SLASH_COMMANDS = [
   { command: 'menu', description: '📋 Menú interactivo principal' },
   { command: 'buscar', description: '🔍 Buscar alumno y WhatsApp de cobranza' },
+  { command: 'asistencias', description: '📅 Ver historial de asistencias de un alumno (DNI)' },
   { command: 'comprobantes', description: '📸 Ver vouchers y comprobantes Yape/Plin' },
   { command: 'resumen', description: '🎓 Resumen general de la escuela' },
   { command: 'alumnos', description: '👥 Alumnos activos y por disciplina' },
@@ -72,6 +74,8 @@ export function createBot(token: string): Bot {
       .text('🏟️ Cupos y Horarios', 'action_capacity')
       .row()
       .text('🔍 Buscar Alumno', 'action_prompt_search')
+      .text('📅 Asistencias', 'action_prompt_asistencias')
+      .row()
       .text('📸 Vouchers Yape/Plin', 'action_vouchers')
       .row()
       .text('📊 Reportes Excel (.xlsx)', 'excel_menu')
@@ -467,6 +471,32 @@ export function createBot(token: string): Bot {
     await handleStudentSearch(ctx, term);
   });
 
+  // /asistencias <dni>
+  bot.command('asistencias', async (ctx) => {
+    const dni = ctx.match?.trim() || '';
+    if (!dni || !/^\d{8}$/.test(dni)) {
+      await ctx.reply(
+        `📅 <b>Asistencias por DNI</b>\n\n` +
+        `Indica el DNI del alumno (8 dígitos):\n` +
+        `Ejemplo: <code>/asistencias 74859612</code>`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+    await ctx.replyWithChatAction('typing');
+    try {
+      const data = await jaguaresService.getAsistenciasAlumno(dni);
+      if (!data) {
+        await ctx.reply(`⚠️ No se encontró ningún alumno con DNI <code>${escapeHtml(dni)}</code>.`, { parse_mode: 'HTML' });
+        return;
+      }
+      const view = renderAsistenciasAlumno(data, 0);
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar asistencias: ${err.message}`);
+    }
+  });
+
   // /comprobantes
   bot.command(['comprobantes', 'vouchers'], async (ctx) => {
     const filter = ctx.match?.trim() || undefined;
@@ -563,6 +593,8 @@ export function createBot(token: string): Bot {
       `Puedes escribir de forma natural o usar la barra <b>/</b> para ver todos los comandos directos:\n\n` +
       `🔍 <b>Búsqueda de Alumno con WhatsApp:</b>\n` +
       `• <code>/buscar Huamani</code> o escribe un DNI de 8 dígitos.\n\n` +
+      `📅 <b>Historial de Asistencias:</b>\n` +
+      `• <code>/asistencias 74859612</code> — muestra presentes, ausentes y barra de porcentaje.\n\n` +
       `📸 <b>Comprobantes y Vouchers:</b>\n` +
       `• <code>/comprobantes</code> o <i>"ver vouchers de pago"</i>\n\n` +
       `🎓 <b>Resumen Ejecutivo:</b>\n` +
@@ -659,6 +691,35 @@ export function createBot(token: string): Bot {
   bot.callbackQuery('action_vouchers', async (ctx) => {
     await ctx.answerCallbackQuery();
     await handleVouchersList(ctx);
+  });
+
+  // --- CALLBACK BOTÓN MENÚ → ASISTENCIAS (pide DNI) ---
+  bot.callbackQuery('action_prompt_asistencias', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      `📅 <b>Historial de Asistencias</b>\n\n` +
+      `Escribe el DNI del alumno (8 dígitos):\n` +
+      `Ejemplo: <code>/asistencias 74859612</code>`,
+      { parse_mode: 'HTML' }
+    );
+  });
+
+  // --- CALLBACK PAGINACIÓN DE ASISTENCIAS ---
+  bot.callbackQuery(/^asist_page_(\d{8})_(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const dni = ctx.match[1];
+    const page = parseInt(ctx.match[2], 10);
+    try {
+      const data = await jaguaresService.getAsistenciasAlumno(dni);
+      if (!data) {
+        await ctx.editMessageText(`⚠️ No se encontró alumno con DNI <code>${escapeHtml(dni)}</code>.`, { parse_mode: 'HTML' });
+        return;
+      }
+      const view = renderAsistenciasAlumno(data, page);
+      await ctx.editMessageText(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al paginar asistencias: ${err.message}`);
+    }
   });
 
   bot.callbackQuery('action_back_menu', async (ctx) => {

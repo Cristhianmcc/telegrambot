@@ -132,3 +132,36 @@ export interface JagVoucherDetail {
   estado: string;
   fechaPago?: string;
 }
+
+/** Un registro individual de asistencia */
+export interface JagAsistenciaRecord {
+  fecha: string;        // YYYY-MM-DD
+  presente: boolean;
+  asistencia_puerta: boolean;
+  hora_puerta?: string; // HH:mm
+  observaciones?: string;
+  deporte: string;
+  dia: string;
+  hora_inicio: string;
+  hora_fin: string;
+  categoria: string;
+}
+
+/** Respuesta del endpoint GET /api/admin/alumnos/:dni/asistencias */
+export interface JagAsistenciasAlumno {
+  alumno: {
+    alumno_id: number;
+    nombres: string;
+    apellido_paterno: string;
+    apellido_materno: string;
+    dni: string;
+  };
+  asistencias: JagAsistenciaRecord[];
+  resumen: {
+    total: number;
+    presentes: number;
+    ausentes: number;
+    puerta_ok: number;
+    sin_puerta: number;
+  };
+}
