@@ -60,4 +60,41 @@ describe('RuleRouter for Jaguares', () => {
     expect(match?.intent).toBe('jag.capacity');
     expect(match?.slots.discipline).toBe('Fútbol');
   });
+
+  it('reconoce cumpleaños sin gastar tokens -> jag.birthdays', () => {
+    const m1 = routeMessage('¿Quién cumple años hoy?');
+    expect(m1?.intent).toBe('jag.birthdays');
+    expect(m1?.slots.birthdayPeriod).toBe('hoy');
+
+    const m2 = routeMessage('cumpleaños de esta semana');
+    expect(m2?.intent).toBe('jag.birthdays');
+    expect(m2?.slots.birthdayPeriod).toBe('semana');
+  });
+
+  it('reconoce alerta de deserción sin tokens -> jag.dropout_risk', () => {
+    const match = routeMessage('alumnos en riesgo de desercion');
+    expect(match?.intent).toBe('jag.dropout_risk');
+  });
+
+  it('reconoce ranking y asistencia perfecta -> jag.ranking', () => {
+    const m1 = routeMessage('ranking de alumnos');
+    expect(m1?.intent).toBe('jag.ranking');
+    expect(m1?.slots.rankingFilter).toBe('top');
+
+    const m2 = routeMessage('alumnos con asistencia perfecta');
+    expect(m2?.intent).toBe('jag.ranking');
+    expect(m2?.slots.rankingFilter).toBe('perfect');
+  });
+
+  it('reconoce búsqueda de operación bancaria -> jag.operation_search', () => {
+    const match = routeMessage('verificar operacion 987654');
+    expect(match?.intent).toBe('jag.operation_search');
+    expect(match?.slots.operationNumber).toBe('987654');
+  });
+
+  it('reconoce consulta de asistencias por DNI -> jag.asistencias_dni', () => {
+    const match = routeMessage('asistencias 72819203');
+    expect(match?.intent).toBe('jag.asistencias_dni');
+    expect(match?.slots.dni).toBe('72819203');
+  });
 });

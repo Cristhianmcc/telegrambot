@@ -280,3 +280,120 @@ export async function generateCapacityExcelBuffer(): Promise<Buffer> {
   const buffer = await workbook.xlsx.writeBuffer();
   return Buffer.from(buffer);
 }
+
+/**
+ * Genera un archivo Excel profesional con el reporte de asistencias del mes.
+ */
+export async function generateAttendanceExcelBuffer(monthLabel: string = 'este mes'): Promise<Buffer> {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'Bot Empresarial Jaguares';
+  workbook.created = new Date();
+
+  const worksheet = workbook.addWorksheet('Control de Asistencias');
+
+  worksheet.mergeCells('A1:J1');
+  const titleRow = worksheet.getCell('A1');
+  titleRow.value = `ESCUELA DEPORTIVA JAGUARES - REPORTE DE ASISTENCIAS (${monthLabel.toUpperCase()})`;
+  titleRow.font = { name: 'Arial', size: 14, bold: true, color: { argb: 'FFFFFFFF' } };
+  titleRow.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FF065F46' } // Verde esmeralda oscuro elegante
+  };
+  titleRow.alignment = { vertical: 'middle', horizontal: 'center' };
+  worksheet.getRow(1).height = 30;
+
+  const headers = [
+    '#',
+    'DNI',
+    'Alumno',
+    'Deporte',
+    'Categoría',
+    'Total Clases',
+    'Presentes (Docente)',
+    'Faltas',
+    'Ingresos Puerta',
+    '% Asistencia'
+  ];
+
+  const headerRow = worksheet.addRow(headers);
+  headerRow.height = 24;
+  headerRow.eachCell((cell) => {
+    cell.font = { name: 'Arial', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF059669' } // Verde moderno
+    };
+    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    cell.border = {
+      top: { style: 'thin' },
+      left: { style: 'thin' },
+      bottom: { style: 'thin' },
+      right: { style: 'thin' }
+    };
+  });
+
+  const query = `
+    SELECT 
+      a.dni,
+      CONCAT(a.nombres, ' ', a.apellido_paterno, ' ', IFNULL(a.apellido_materno, '')) AS alumno,
+      d.nombre AS deporte,
+      IFNULL(h.categoria, 'General') AS categoria,
+      COUNT(ast.asistencia_id) AS total_clases,
+      SUM(CASE WHEN ast.presente = 1 THEN 1 ELSE 0 END) AS presentes,
+      SUM(CASE WHEN ast.presente = 0 THEN 1 ELSE 0 END) AS faltas,
+      SUM(CASE WHEN ast.asistencia_puerta = 1 THEN 1 ELSE 0 END) AS puerta_ok
+    FROM asistencias ast
+    JOIN alumnos a ON ast.alumno_id = a.alumno_id
+    JOIN horarios h ON ast.horario_id = h.horario_id
+    JOIN deportes d ON h.deporte_id = d.deporte_id
+    WHERE ast.fecha >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+    GROUP BY a.dni, a.nombres, a.apellido_paterno, a.apellido_materno, d.nombre, h.categoria
+    ORDER BY d.nombre, alumno
+  `;
+
+  const rows = await executeReadOnlyQuery<any>(query);
+  rows.forEach((r: any, idx: number) => {
+    const tot = Number(r.total_clases) || 1;
+    const pres = Number(r.presentes);
+    const pct = Math.round((pres / tot) * 100);
+
+    const row = worksheet.addRow([
+      idx + 1,
+      r.dni,
+      r.alumno,
+      r.deporte,
+      r.categoria,
+      r.total_clases,
+      r.presentes,
+      r.faltas,
+      r.puerta_ok,
+      `${pct}%`
+    ]);
+
+    const pctCell = row.getCell(10);
+    if (pct >= 80) {
+      pctCell.font = { color: { argb: 'FF065F46' }, bold: true };
+    } else if (pct < 50) {
+      pctCell.font = { color: { argb: 'FFDC2626' }, bold: true };
+    }
+  });
+
+  worksheet.columns = [
+    { width: 6 },
+    { width: 12 },
+    { width: 30 },
+    { width: 18 },
+    { width: 14 },
+    { width: 14 },
+    { width: 20 },
+    { width: 10 },
+    { width: 16 },
+    { width: 14 }
+  ];
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  return Buffer.from(buffer);
+}
+

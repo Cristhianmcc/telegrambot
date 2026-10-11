@@ -216,3 +216,61 @@ export interface JagDocenteAlumnosClase {
   };
 }
 
+/** Alumno que cumple años */
+export interface JagBirthdayStudent {
+  alumno_id: number;
+  dni: string;
+  nombre_completo: string;
+  fecha_nacimiento: string; // YYYY-MM-DD
+  dia: number;
+  mes: number;
+  edad_cumplir: number;
+  telefono?: string;
+  apoderado?: string;
+  dias_restantes: number; // 0 = hoy, >0 = proximos dias
+}
+
+/** Alumno en riesgo de deserción por inasistencias consecutivas o baja asistencia */
+export interface JagDropoutRiskStudent {
+  alumno_id: number;
+  dni: string;
+  nombre_completo: string;
+  deporte: string;
+  telefono?: string;
+  apoderado?: string;
+  faltas_consecutivas: number;
+  total_clases: number;
+  presentes: number;
+  porcentaje_asistencia: number;
+  ultima_clase_fecha?: string;
+}
+
+/** Resultado de búsqueda por número de operación bancaria */
+export interface JagOperationSearchResult {
+  tipo: 'inscripcion' | 'mensualidad';
+  alumno_id: number;
+  dni: string;
+  nombre_completo: string;
+  monto: number;
+  fecha: string;
+  estado: string; // confirmado, pendiente, rechazada
+  numero_operacion: string;
+  comprobante_url?: string;
+  detalle: string; // ej: "Inscripción en Fútbol" o "Mensualidad de Octubre"
+}
+
+/** Alumno en ranking o con asistencia perfecta */
+export interface JagRankingStudent {
+  puesto: number;
+  alumno_id: number;
+  dni: string;
+  nombre_completo: string;
+  deporte: string;
+  categoria?: string;
+  puntos: number;
+  porcentaje_asistencia: number;
+  clases_asistidas: number;
+  total_clases: number;
+}
+
+

@@ -12,7 +12,11 @@ import {
   JagVoucherDetail,
   JagAsistenciasAlumno,
   JagDocentesControlResumen,
-  JagDocenteAlumnosClase
+  JagDocenteAlumnosClase,
+  JagBirthdayStudent,
+  JagDropoutRiskStudent,
+  JagOperationSearchResult,
+  JagRankingStudent
 } from '../contracts/jaguares.js';
 
 export function escapeHtml(str: string): string {
@@ -523,4 +527,162 @@ export function renderDocenteAlumnosClase(
 
   return { text, keyboard: kb };
 }
+
+const MESES_ES = [
+  'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+  'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'
+];
+
+/**
+ * Renderiza el listado de alumnos que cumplen años.
+ */
+export function renderBirthdays(
+  students: JagBirthdayStudent[],
+  periodo: string
+): { text: string; keyboard: InlineKeyboard } {
+  const labelPeriodo = periodo === 'hoy' ? 'Hoy' : periodo === 'semana' ? 'Esta Semana' : 'Este Mes';
+  let text = `🎂 <b>Cumpleaños de Alumnos · ${labelPeriodo}</b>\n`;
+  text += `🎉 <i>Total: ${students.length} cumpleañero(s)</i>\n\n`;
+
+  if (students.length === 0) {
+    text += `<i>No hay alumnos que cumplan años en este período.</i>\n\n`;
+  } else {
+    students.forEach((s, idx) => {
+      const mesStr = MESES_ES[s.mes - 1] || s.mes;
+      const diaTexto = s.dias_restantes === 0 ? '✨ <b>¡HOY!</b>' : `en ${s.dias_restantes} día(s)`;
+      text += `${idx + 1}. 🎈 <b>${escapeHtml(s.nombre_completo)}</b> (Cumple <b>${s.edad_cumplir} años</b>)\n`;
+      text += `   📅 ${s.dia} de ${mesStr} (${diaTexto})\n`;
+
+      if (s.telefono) {
+        const cleanTel = s.telefono.replace(/\D/g, '');
+        const telPeru = cleanTel.length === 9 ? `51${cleanTel}` : cleanTel;
+        const msg = encodeURIComponent(
+          `¡Hola! Desde la Escuela Deportiva Jaguares queremos desearle un muy feliz cumpleaños a ${s.nombre_completo} 🎉🎂. ¡Que pase un día excelente lleno de bendiciones y deporte! 🐆⚽`
+        );
+        text += `   📱 <a href="https://wa.me/${telPeru}?text=${msg}">💬 Enviar saludo por WhatsApp</a>\n`;
+      }
+      text += `\n`;
+    });
+  }
+
+  const kb = new InlineKeyboard()
+    .text(periodo === 'hoy' ? '• 🎂 Hoy •' : '🎂 Hoy', 'cumple_hoy')
+    .text(periodo === 'semana' ? '• 📅 Semana •' : '📅 Semana', 'cumple_semana')
+    .text(periodo === 'mes' ? '• 🗓️ Mes •' : '🗓️ Mes', 'cumple_mes')
+    .row()
+    .text('🔙 Volver al Menú', 'action_back_menu');
+
+  return { text, keyboard: kb };
+}
+
+/**
+ * Renderiza la lista de alumnos en riesgo de deserción por inasistencias.
+ */
+export function renderDropoutRisk(
+  students: JagDropoutRiskStudent[]
+): { text: string; keyboard: InlineKeyboard } {
+  let text = `📉 <b>Alerta de Deserción · Inasistencias Críticas</b>\n`;
+  text += `⚠️ <i>Alumnos con 3+ faltas consecutivas o baja asistencia (&lt;50%):</i>\n\n`;
+
+  if (students.length === 0) {
+    text += `🎉 <i>¡Excelente! No se detectaron alumnos con inasistencias críticas en los últimos 45 días.</i>\n\n`;
+  } else {
+    students.slice(0, 10).forEach((s, idx) => {
+      const alertaFaltas = s.faltas_consecutivas >= 3
+        ? `🚨 <b>${s.faltas_consecutivas} faltas consecutivas</b>`
+        : `⚠️ ${s.faltas_consecutivas} falta(s) seguidas`;
+
+      text += `${idx + 1}. <b>${escapeHtml(s.nombre_completo)}</b> — 🏅 ${escapeHtml(s.deporte)}\n`;
+      text += `   ${alertaFaltas} · Asistencia: <b>${s.porcentaje_asistencia}%</b> (${s.presentes}/${s.total_clases} clases)\n`;
+
+      if (s.apoderado) {
+        text += `   👤 Apoderado: ${escapeHtml(s.apoderado)}\n`;
+      }
+
+      if (s.telefono) {
+        const cleanTel = s.telefono.replace(/\D/g, '');
+        const telPeru = cleanTel.length === 9 ? `51${cleanTel}` : cleanTel;
+        const msg = encodeURIComponent(
+          `Hola, le saludamos de la Escuela Deportiva Jaguares. Nos comunicamos cordialmente con usted porque notamos que ${s.nombre_completo} no ha podido asistir a sus últimas clases de ${s.deporte}. ¿Todo bien con el alumno? ¿En qué podemos ayudarle? 🐆`
+        );
+        text += `   📱 <a href="https://wa.me/${telPeru}?text=${msg}">💬 Contactar por WhatsApp</a>\n`;
+      }
+      text += `\n`;
+    });
+
+    if (students.length > 10) {
+      text += `<i>... y ${students.length - 10} alumno(s) más en riesgo.</i>\n\n`;
+    }
+  }
+
+  const kb = new InlineKeyboard()
+    .text('🔄 Actualizar', 'action_desercion_refresh')
+    .text('🔙 Volver al Menú', 'action_back_menu');
+
+  return { text, keyboard: kb };
+}
+
+/**
+ * Renderiza los resultados de búsqueda por número de operación bancaria.
+ */
+export function renderOperationSearch(
+  results: JagOperationSearchResult[],
+  query: string
+): string {
+  let text = `🔍 <b>Búsqueda de Operación Bancaria · #${escapeHtml(query)}</b>\n`;
+  text += `📊 Coincidencias encontradas: <b>${results.length}</b>\n\n`;
+
+  if (results.length === 0) {
+    text += `❌ <i>No se encontró ninguna inscripción ni mensualidad con el número de operación "${escapeHtml(query)}".</i>\n`;
+    text += `💡 <i>Verifica si el comprobante ya fue subido o si el número ingresado tiene algún error de tipeo.</i>\n`;
+    return text;
+  }
+
+  results.forEach((r, idx) => {
+    const iconTipo = r.tipo === 'inscripcion' ? '🎓 Inscripción' : '💰 Mensualidad';
+    const badgeEstado = r.estado === 'confirmado' || r.estado === 'confirmada'
+      ? '✅ Confirmado'
+      : r.estado === 'pendiente'
+      ? '⏳ Pendiente de verificación'
+      : '❌ Rechazado';
+
+    text += `${idx + 1}. <b>${iconTipo}</b> · <b>${formatSoles(r.monto)}</b>\n`;
+    text += `   👤 Alumno: <b>${escapeHtml(r.nombre_completo)}</b> (DNI: <code>${escapeHtml(r.dni)}</code>)\n`;
+    text += `   📝 Detalle: ${escapeHtml(r.detalle)}\n`;
+    text += `   📅 Fecha: ${escapeHtml(r.fecha)} · Estado: ${badgeEstado}\n`;
+    text += `   🔢 N° Operación: <code>${escapeHtml(r.numero_operacion)}</code>\n`;
+
+    if (r.comprobante_url) {
+      text += `   📸 <a href="${escapeHtml(r.comprobante_url)}">Ver foto del comprobante</a>\n`;
+    }
+    text += `\n`;
+  });
+
+  return text;
+}
+
+/**
+ * Renderiza el ranking de alumnos o el cuadro de asistencia perfecta.
+ */
+export function renderRanking(
+  students: JagRankingStudent[],
+  titulo: string = 'Ranking de Alumnos'
+): string {
+  let text = `🏆 <b>${escapeHtml(titulo)}</b>\n`;
+  text += `📊 Total alumnos destacados: <b>${students.length}</b>\n\n`;
+
+  if (students.length === 0) {
+    text += `<i>No hay registros suficientes para este ranking aún en el mes.</i>\n`;
+    return text;
+  }
+
+  students.slice(0, 15).forEach((s) => {
+    const medalla = s.puesto === 1 ? '🥇' : s.puesto === 2 ? '🥈' : s.puesto === 3 ? '🥉' : `<b>${s.puesto}.</b>`;
+    text += `${medalla} <b>${escapeHtml(s.nombre_completo)}</b> — 🏅 ${escapeHtml(s.deporte)}${s.categoria ? ` (${escapeHtml(s.categoria)})` : ''}\n`;
+    text += `   ⭐ <b>${s.puntos} pts</b> · 📊 <b>${s.porcentaje_asistencia}%</b> de asistencia (${s.clases_asistidas}/${s.total_clases} clases)\n\n`;
+  });
+
+  return text;
+}
+
 

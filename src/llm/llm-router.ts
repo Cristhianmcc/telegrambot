@@ -206,6 +206,13 @@ function cleanLLMText(text: string): string {
     .trim();
 }
 
+interface CacheEntry {
+  match: RouteMatch;
+  expiresAt: number;
+}
+const llmResponseCache = new Map<string, CacheEntry>();
+const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutos
+
 /**
  * Enruta un mensaje usando LLM (DeepSeek / OpenAI) con soporte para llamadas a funciones
  * y consultas analíticas a MySQL (solo lectura) en múltiples rondas de interacción.
@@ -220,6 +227,19 @@ export async function routeMessageWithLLM(
 ): Promise<RouteMatch | null> {
   if (!isLLMEnabled() || !openaiClient) {
     return null;
+  }
+
+  // Ahorro de tokens: Cache en memoria para preguntas idénticas sin historial previo
+  const cacheKey = userText.trim().toLowerCase();
+  const hasHistory = Boolean(options.history && options.history.length > 0);
+  if (!hasHistory && llmResponseCache.has(cacheKey)) {
+    const entry = llmResponseCache.get(cacheKey)!;
+    if (Date.now() < entry.expiresAt) {
+      console.log(`⚡ [LLM Cache Hit]: Respondiendo "${userText}" desde caché (0 tokens gastados)`);
+      return entry.match;
+    } else {
+      llmResponseCache.delete(cacheKey);
+    }
   }
 
   const model = currentProvider === 'deepseek' ? 'deepseek-chat' : 'gpt-4o-mini';
@@ -240,16 +260,15 @@ export async function routeMessageWithLLM(
       'SÁBADO',
       'DOMINGO'
     ][nowDateTime.weekday - 1];
-    const currentTimeStr = nowDateTime.toFormat('HH:mm:ss');
 
+    // OJO: No incluir segundos en el system prompt para permitir DeepSeek Context Caching (ahorro del 90%)
     const systemPrompt =
       'Eres el asistente virtual inteligente de la Escuela Deportiva Jaguares con acceso directo a su base de datos MySQL (solo lectura).\n' +
       'Tienes herramientas predefinidas para métricas comunes (resumen general, alumnos, ingresos, deudas, cupos, últimos inscritos).\n' +
       'Si el usuario hace una pregunta analítica, comparativa, de horarios, de asistencias o de alumnos específicos, USA la herramienta jag_sql_query con una consulta SELECT válida y optimizada.\n\n' +
-      'FECHA Y HORA DE REFERENCIA (Zona Horaria America/Lima):\n' +
+      'FECHA DE REFERENCIA (Zona Horaria America/Lima):\n' +
       `- Fecha de hoy: ${todayStr} (Día: ${dayOfWeekEs})\n` +
       `- Fecha de ayer: ${yesterdayStr}\n` +
-      `- Hora actual: ${currentTimeStr}\n` +
       `Si preguntan por "hoy", consulta con fecha = '${todayStr}'.\n` +
       `Si preguntan por "ayer", consulta con fecha = '${yesterdayStr}'.\n\n` +
       'CONSERVACIÓN DE CONTEXTO Y CONVERSACIÓN:\n' +
@@ -345,6 +364,37 @@ export async function routeMessageWithLLM(
       '    JOIN administradores adm ON ast.registrado_por = adm.admin_id\n' +
       '    WHERE ast.fecha = \'YYYY-MM-DD\' AND adm.nombre_completo LIKE \'%...%\'\n' +
       '    ORDER BY a.apellido_paterno;\n' +
+      '  ¡CUMPLEAÑOS DE ALUMNOS!:\n' +
+      '  • ¿Quién cumple años hoy/esta semana/este mes?:\n' +
+      '    SELECT nombres, apellido_paterno, DATE_FORMAT(fecha_nacimiento, \'%d/%m\') AS cumple, ' +
+      'YEAR(CURDATE()) - YEAR(fecha_nacimiento) AS edad_cumplir, telefono\n' +
+      '    FROM alumnos WHERE estado = \'activo\' AND fecha_nacimiento > \'1950-01-01\' ' +
+      'AND MONTH(fecha_nacimiento) = MONTH(CURDATE()) AND DAY(fecha_nacimiento) = DAY(CURDATE());\n' +
+      '  ¡BÚSQUEDA DE NÚMERO DE OPERACIÓN (ANTI-FRAUDE)!:\n' +
+      '  • Buscar operación bancaria en inscripciones y mensualidades:\n' +
+      '    SELECT a.dni, a.nombres, a.apellido_paterno, a.numero_operacion, a.monto_pago, a.estado_pago, \'inscripcion\' AS origen\n' +
+      '    FROM alumnos a WHERE a.numero_operacion LIKE \'%NUM%\'\n' +
+      '    UNION\n' +
+      '    SELECT a.dni, a.nombres, a.apellido_paterno, pm.numero_operacion, pm.monto, pm.estado, \'mensualidad\' AS origen\n' +
+      '    FROM pagos_mensuales pm JOIN alumnos a ON pm.alumno_id = a.alumno_id WHERE pm.numero_operacion LIKE \'%NUM%\';\n' +
+      '  ¡ALERTA DE DESERCIÓN (FALTAS CRÍTICAS)!:\n' +
+      '  • Alumnos con 3 o más faltas o baja asistencia:\n' +
+      '    SELECT a.nombres, a.apellido_paterno, d.nombre AS deporte, ' +
+      'COUNT(ast.asistencia_id) AS total_clases, SUM(CASE WHEN ast.presente = 0 THEN 1 ELSE 0 END) AS ausentes\n' +
+      '    FROM alumnos a JOIN asistencias ast ON a.alumno_id = ast.alumno_id ' +
+      'JOIN horarios h ON ast.horario_id = h.horario_id JOIN deportes d ON h.deporte_id = d.deporte_id\n' +
+      '    WHERE a.estado = \'activo\' AND ast.fecha >= DATE_SUB(CURDATE(), INTERVAL 45 DAY)\n' +
+      '    GROUP BY a.alumno_id, a.nombres, a.apellido_paterno, d.nombre\n' +
+      '    HAVING ausentes >= 3 ORDER BY ausentes DESC LIMIT 15;\n' +
+      '  ¡RANKING Y ALUMNOS DESTACADOS!:\n' +
+      '  • Top alumnos con más asistencias del mes o 100% asistencia:\n' +
+      '    SELECT a.nombres, a.apellido_paterno, d.nombre AS deporte, ' +
+      'COUNT(ast.asistencia_id) AS total_clases, SUM(CASE WHEN ast.presente = 1 THEN 1 ELSE 0 END) AS presentes\n' +
+      '    FROM asistencias ast JOIN alumnos a ON ast.alumno_id = a.alumno_id ' +
+      'JOIN horarios h ON ast.horario_id = h.horario_id JOIN deportes d ON h.deporte_id = d.deporte_id\n' +
+      '    WHERE MONTH(ast.fecha) = MONTH(CURDATE()) AND YEAR(ast.fecha) = YEAR(CURDATE())\n' +
+      '    GROUP BY a.alumno_id, a.nombres, a.apellido_paterno, d.nombre\n' +
+      '    ORDER BY presentes DESC LIMIT 15;\n' +
       '- pagos_mensuales(pago_id, alumno_id, mes, año, monto, estado, metodo_pago, fecha_pago)\n\n' +
       'FORMATO Y ORDEN DE RESPUESTAS (Telegram Empresarial):\n' +
       '1. Si una consulta no devuelve resultados (por ejemplo si preguntan por un día en que no hubo clases o no hay registros cargados), indícalo amablemente explicando la fecha consultada y sugiriendo verificar otra fecha o usar /asistencias <DNI>.\n' +
@@ -371,7 +421,7 @@ export async function routeMessageWithLLM(
       { role: 'user', content: userText }
     ];
 
-    const maxIterations = 4;
+    const maxIterations = 2;
     let iteration = 0;
 
     while (iteration < maxIterations) {
@@ -394,7 +444,7 @@ export async function routeMessageWithLLM(
         const rawContent = choice?.message?.content || '';
         const cleanContent = cleanLLMText(rawContent);
         if (cleanContent) {
-          return {
+          const matchResult: RouteMatch = {
             intent: 'general.direct_response',
             confidence: 0.98,
             slots: {
@@ -402,6 +452,10 @@ export async function routeMessageWithLLM(
               directResponse: cleanContent
             }
           };
+          if (!hasHistory) {
+            llmResponseCache.set(cacheKey, { match: matchResult, expiresAt: Date.now() + CACHE_TTL_MS });
+          }
+          return matchResult;
         }
         return null;
       }
@@ -475,11 +529,28 @@ export async function routeMessageWithLLM(
           if (callArgs.sql) {
             try {
               console.log(`🔍 [LLM Query SQL (ronda ${iteration})]:`, callArgs.sql);
-              const rows = await executeReadOnlyQuery(callArgs.sql);
+              const rows: any[] = (await executeReadOnlyQuery(callArgs.sql)) as any[];
+              const total = rows.length;
+
+              // OPTIMIZACIÓN TOKENS: Limitar a 12 filas máximo y descartar campos nulos/vacíos
+              const compactRows = rows.slice(0, 12).map((r) => {
+                const clean: Record<string, any> = {};
+                for (const [k, v] of Object.entries(r)) {
+                  if (v !== null && v !== undefined && v !== '') {
+                    clean[k] = v;
+                  }
+                }
+                return clean;
+              });
+
+              const toolPayload = total > 12
+                ? { total_encontrados: total, primeros_12: compactRows }
+                : compactRows;
+
               currentMessages.push({
                 role: 'tool',
                 tool_call_id: call.id,
-                content: JSON.stringify(rows.slice(0, 50))
+                content: JSON.stringify(toolPayload)
               });
             } catch (sqlErr: any) {
               console.warn('⚠️ Error ejecutando query SQL del LLM:', sqlErr.message);
@@ -516,7 +587,7 @@ export async function routeMessageWithLLM(
       });
       const finalContent = cleanLLMText(finalFollowUp.choices[0]?.message?.content || '');
       if (finalContent) {
-        return {
+        const matchResult: RouteMatch = {
           intent: 'general.direct_response',
           confidence: 0.98,
           slots: {
@@ -524,6 +595,10 @@ export async function routeMessageWithLLM(
             directResponse: finalContent
           }
         };
+        if (!hasHistory) {
+          llmResponseCache.set(cacheKey, { match: matchResult, expiresAt: Date.now() + CACHE_TTL_MS });
+        }
+        return matchResult;
       }
     } catch (err: any) {
       console.warn('⚠️ Error en llamada forzada final del LLM:', err.message);

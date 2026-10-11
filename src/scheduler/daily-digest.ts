@@ -91,6 +91,16 @@ export async function buildDailyDigestHtml(
     });
   }
 
+  // 6. Cumpleaños de hoy
+  const todayBirthdays = await jaguaresService.getBirthdays('hoy').catch(() => []);
+  if (todayBirthdays.length > 0) {
+    hasSections = true;
+    html += `\n🎂 <b>¡Cumpleaños de Hoy (${todayBirthdays.length})!:</b>\n`;
+    todayBirthdays.forEach((b) => {
+      html += `• 🎈 <b>${b.nombre_completo}</b> (cumple ${b.edad_cumplir} años)\n`;
+    });
+  }
+
   if (!hasSections) {
     html += `ℹ️ <i>No tienes ningún módulo activo para este reporte. Configúralos en /notificaciones</i>\n`;
   }

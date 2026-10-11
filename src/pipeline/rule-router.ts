@@ -10,6 +10,12 @@ export type JaguaresIntent =
   | 'jag.enrollments'
   | 'jag.recent_students'
   | 'jag.capacity'
+  | 'jag.birthdays'
+  | 'jag.dropout_risk'
+  | 'jag.ranking'
+  | 'jag.docentes_control'
+  | 'jag.operation_search'
+  | 'jag.asistencias_dni'
   | 'general.help'
   | 'general.menu'
   | 'general.greeting'
@@ -23,6 +29,11 @@ export interface RouteMatch {
     discipline?: string;
     rawText: string;
     directResponse?: string;
+    birthdayPeriod?: 'hoy' | 'semana' | 'mes';
+    rankingFilter?: 'top' | 'perfect';
+    targetFecha?: string;
+    operationNumber?: string;
+    dni?: string;
   };
 }
 
@@ -222,6 +233,109 @@ export function routeMessage(rawText: string, options: { now?: Date; timezone?: 
       intent: 'jag.student_counts',
       confidence: 0.95,
       slots: { discipline, rawText }
+    };
+  }
+
+  // 9. Cumpleaños de alumnos (0 tokens)
+  if (
+    text.includes('cumplean') ||
+    text.includes('cumpleanero') ||
+    text.includes('quien cumple') ||
+    text.includes('quienes cumplen') ||
+    text === '/cumpleanos' ||
+    text === '/cumple'
+  ) {
+    let birthdayPeriod: 'hoy' | 'semana' | 'mes' = 'hoy';
+    if (text.includes('semana')) birthdayPeriod = 'semana';
+    else if (text.includes('mes')) birthdayPeriod = 'mes';
+    return {
+      intent: 'jag.birthdays',
+      confidence: 0.98,
+      slots: { birthdayPeriod, rawText }
+    };
+  }
+
+  // 10. Alerta de deserción / Faltas críticas (0 tokens)
+  if (
+    text.includes('desercion') ||
+    text.includes('alumnos en riesgo') ||
+    text.includes('riesgo de desercion') ||
+    text.includes('muchas faltas') ||
+    text.includes('faltas consecutivas') ||
+    text.includes('quienes faltan mucho') ||
+    text.includes('inasistencias criticas') ||
+    text === '/desercion' ||
+    text === '/faltas'
+  ) {
+    return {
+      intent: 'jag.dropout_risk',
+      confidence: 0.98,
+      slots: { rawText }
+    };
+  }
+
+  // 11. Ranking y Alumnos destacados (0 tokens)
+  if (
+    text.includes('ranking') ||
+    text.includes('top alumnos') ||
+    text.includes('mejores alumnos') ||
+    text.includes('alumnos destacados') ||
+    text.includes('asistencia perfecta') ||
+    text.includes('100% asistencia') ||
+    text === '/ranking'
+  ) {
+    const rankingFilter = (text.includes('perfect') || text.includes('100%')) ? 'perfect' : 'top';
+    return {
+      intent: 'jag.ranking',
+      confidence: 0.98,
+      slots: { rankingFilter, rawText }
+    };
+  }
+
+  // 12. Control de docentes / Quién pasó lista (0 tokens)
+  if (
+    text.includes('pasaron lista') ||
+    text.includes('paso lista') ||
+    text.includes('pasaron asistencia') ||
+    text.includes('paso asistencia') ||
+    text.includes('control de docentes') ||
+    text.includes('control docentes') ||
+    text.includes('control profesores') ||
+    text === '/docentes' ||
+    text === '/profesores'
+  ) {
+    let targetFecha: string | undefined = undefined;
+    if (text.includes('ayer')) {
+      const target = options.now ? new Date(options.now.getTime() - 86400000) : new Date(Date.now() - 86400000);
+      targetFecha = target.toISOString().split('T')[0];
+    } else if (text.includes('hoy')) {
+      const target = options.now || new Date();
+      targetFecha = target.toISOString().split('T')[0];
+    }
+    return {
+      intent: 'jag.docentes_control',
+      confidence: 0.98,
+      slots: { targetFecha, rawText }
+    };
+  }
+
+  // 13. Búsqueda de operación bancaria (0 tokens)
+  const opMatch = rawText.match(/(?:operaci[oó]n|numop|voucher_op|nro\s*op|n[uú]mero\s*de\s*operaci[oó]n)\s*[:#]?\s*([a-zA-Z0-9_-]{4,25})/i);
+  if (opMatch && opMatch[1]) {
+    return {
+      intent: 'jag.operation_search',
+      confidence: 0.98,
+      slots: { operationNumber: opMatch[1].trim(), rawText }
+    };
+  }
+
+  // 14. Asistencias de alumno por DNI (0 tokens)
+  const dniMatch = rawText.match(/(?:asistencias?|asistencia del alumno|asistencias de)\s+(\d{8})\b/i);
+  if (dniMatch && dniMatch[1]) {
+    return {
+      intent: 'jag.asistencias_dni',
+      confidence: 0.98,
+      slots: { dni: dniMatch[1], rawText }
     };
   }
 

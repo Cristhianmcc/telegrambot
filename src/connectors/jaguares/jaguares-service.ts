@@ -15,7 +15,11 @@ import {
   JagAsistenciasAlumno,
   JagDocenteClaseAsistencia,
   JagDocentesControlResumen,
-  JagDocenteAlumnosClase
+  JagDocenteAlumnosClase,
+  JagBirthdayStudent,
+  JagDropoutRiskStudent,
+  JagOperationSearchResult,
+  JagRankingStudent
 } from '../../contracts/jaguares.js';
 import { ResolvedPeriod } from '../../contracts/date.js';
 
@@ -854,6 +858,335 @@ export class JaguaresService {
         puerta_ok: puertaOk
       }
     };
+  }
+
+  /**
+   * Cumpleaños de alumnos activos (hoy, esta semana o este mes).
+   */
+  async getBirthdays(periodo: 'hoy' | 'semana' | 'mes' = 'hoy'): Promise<JagBirthdayStudent[]> {
+    const tz = 'America/Lima';
+    const now = DateTime.now().setZone(tz);
+    const mesActual = now.month;
+    const diaActual = now.day;
+    const anioActual = now.year;
+
+    let whereClause = '';
+    const params: any[] = [];
+
+    if (periodo === 'hoy') {
+      whereClause = 'MONTH(fecha_nacimiento) = ? AND DAY(fecha_nacimiento) = ?';
+      params.push(mesActual, diaActual);
+    } else if (periodo === 'semana') {
+      const finSemana = now.plus({ days: 7 });
+      if (finSemana.month === now.month) {
+        whereClause = 'MONTH(fecha_nacimiento) = ? AND DAY(fecha_nacimiento) BETWEEN ? AND ?';
+        params.push(mesActual, diaActual, finSemana.day);
+      } else {
+        whereClause = `
+          (
+            (MONTH(fecha_nacimiento) = ? AND DAY(fecha_nacimiento) BETWEEN ? AND 31)
+            OR (MONTH(fecha_nacimiento) = ? AND DAY(fecha_nacimiento) <= ?)
+          )
+        `;
+        params.push(mesActual, diaActual, finSemana.month, finSemana.day);
+      }
+    } else {
+      whereClause = 'MONTH(fecha_nacimiento) = ?';
+      params.push(mesActual);
+    }
+
+    const sql = `
+      SELECT 
+        alumno_id,
+        dni,
+        CONCAT(nombres, ' ', apellido_paterno, ' ', COALESCE(apellido_materno, '')) AS nombre_completo,
+        DATE_FORMAT(fecha_nacimiento, '%Y-%m-%d') AS fecha_nacimiento,
+        DAY(fecha_nacimiento) AS dia,
+        MONTH(fecha_nacimiento) AS mes,
+        YEAR(fecha_nacimiento) AS anio_nac,
+        telefono,
+        apoderado
+      FROM alumnos
+      WHERE estado = 'activo'
+        AND fecha_nacimiento IS NOT NULL
+        AND fecha_nacimiento > '1950-01-01'
+        AND ${whereClause}
+      ORDER BY MONTH(fecha_nacimiento), DAY(fecha_nacimiento), apellido_paterno
+    `;
+
+    const rows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(sql, params);
+
+    return rows.map((r) => {
+      const anioNac = Number(r.anio_nac);
+      const edadCumplir = anioActual - anioNac;
+      const cumpleThisYear = DateTime.fromObject({ year: anioActual, month: Number(r.mes), day: Number(r.dia) }, { zone: tz });
+      let diffDays = Math.round(cumpleThisYear.diff(now.startOf('day'), 'days').days);
+      if (diffDays < 0) diffDays += 365;
+
+      return {
+        alumno_id: Number(r.alumno_id),
+        dni: r.dni,
+        nombre_completo: r.nombre_completo.trim(),
+        fecha_nacimiento: r.fecha_nacimiento,
+        dia: Number(r.dia),
+        mes: Number(r.mes),
+        edad_cumplir: Math.max(1, edadCumplir),
+        telefono: r.telefono || undefined,
+        apoderado: r.apoderado || undefined,
+        dias_restantes: diffDays
+      };
+    });
+  }
+
+  /**
+   * Alumnos en riesgo de deserción (3+ faltas consecutivas o asistencia < 50% en los últimos 45 días).
+   */
+  async getDropoutRisk(): Promise<JagDropoutRiskStudent[]> {
+    const sql = `
+      SELECT 
+        a.alumno_id,
+        a.dni,
+        CONCAT(a.nombres, ' ', a.apellido_paterno, ' ', COALESCE(a.apellido_materno, '')) AS nombre_completo,
+        d.nombre AS deporte,
+        a.telefono,
+        a.apoderado,
+        COUNT(ast.asistencia_id) AS total_clases,
+        SUM(CASE WHEN ast.presente = 1 THEN 1 ELSE 0 END) AS presentes,
+        SUM(CASE WHEN ast.presente = 0 THEN 1 ELSE 0 END) AS ausentes,
+        MAX(ast.fecha) AS ultima_clase_fecha
+      FROM alumnos a
+      JOIN asistencias ast ON a.alumno_id = ast.alumno_id
+      JOIN horarios h ON ast.horario_id = h.horario_id
+      JOIN deportes d ON h.deporte_id = d.deporte_id
+      WHERE a.estado = 'activo'
+        AND ast.fecha >= DATE_SUB(CURDATE(), INTERVAL 45 DAY)
+      GROUP BY a.alumno_id, a.dni, a.nombres, a.apellido_paterno, a.apellido_materno, d.nombre, a.telefono, a.apoderado
+      HAVING total_clases >= 3 AND (ausentes >= 3 OR (presentes / total_clases) < 0.50)
+      ORDER BY (presentes / total_clases) ASC, ausentes DESC
+      LIMIT 25;
+    `;
+
+    const rows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(sql);
+    const results: JagDropoutRiskStudent[] = [];
+
+    for (const r of rows) {
+      const total = Number(r.total_clases);
+      const pres = Number(r.presentes);
+      const pct = Math.round((pres / total) * 100);
+
+      const ultimas = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
+        'SELECT presente FROM asistencias WHERE alumno_id = ? ORDER BY fecha DESC LIMIT 5',
+        [r.alumno_id]
+      );
+      let faltasConsecutivas = 0;
+      for (const u of ultimas) {
+        if (u.presente === 0 || u.presente === false) {
+          faltasConsecutivas++;
+        } else {
+          break;
+        }
+      }
+
+      results.push({
+        alumno_id: Number(r.alumno_id),
+        dni: r.dni,
+        nombre_completo: r.nombre_completo.trim(),
+        deporte: r.deporte,
+        telefono: r.telefono || undefined,
+        apoderado: r.apoderado || undefined,
+        faltas_consecutivas: faltasConsecutivas,
+        total_clases: total,
+        presentes: pres,
+        porcentaje_asistencia: pct,
+        ultima_clase_fecha: r.ultima_clase_fecha ? DateTime.fromJSDate(new Date(r.ultima_clase_fecha)).toFormat('yyyy-MM-dd') : undefined
+      });
+    }
+
+    return results;
+  }
+
+  /**
+   * Búsqueda por número de operación bancaria (en inscripciones y pagos mensuales).
+   */
+  async searchOperationNumber(numOp: string): Promise<JagOperationSearchResult[]> {
+    const clean = numOp.trim();
+    if (!clean || clean.length < 2) return [];
+
+    const colYear = getColYear();
+    const results: JagOperationSearchResult[] = [];
+
+    // 1. Inscripciones
+    const sqlInscripciones = `
+      SELECT 
+        a.alumno_id,
+        a.dni,
+        CONCAT(a.nombres, ' ', a.apellido_paterno, ' ', COALESCE(a.apellido_materno, '')) AS nombre_completo,
+        COALESCE(a.monto_pago, 0) AS monto,
+        COALESCE(DATE_FORMAT(a.fecha_pago, '%Y-%m-%d'), DATE_FORMAT(a.created_at, '%Y-%m-%d')) AS fecha,
+        COALESCE(a.estado_pago, 'pendiente') AS estado,
+        a.numero_operacion,
+        a.comprobante_pago_url,
+        GROUP_CONCAT(DISTINCT d.nombre SEPARATOR ', ') AS deportes
+      FROM alumnos a
+      LEFT JOIN inscripciones i ON a.alumno_id = i.alumno_id
+      LEFT JOIN deportes d ON i.deporte_id = d.deporte_id
+      WHERE a.numero_operacion LIKE ?
+      GROUP BY a.alumno_id, a.dni, a.nombres, a.apellido_paterno, a.apellido_materno, a.monto_pago, a.fecha_pago, a.created_at, a.estado_pago, a.numero_operacion, a.comprobante_pago_url
+      ORDER BY a.created_at DESC
+      LIMIT 10
+    `;
+    const rowsIns = await executeReadOnlyQuery<mysql.RowDataPacket[]>(sqlInscripciones, [`%${clean}%`]);
+    for (const r of rowsIns) {
+      results.push({
+        tipo: 'inscripcion',
+        alumno_id: Number(r.alumno_id),
+        dni: r.dni,
+        nombre_completo: r.nombre_completo.trim(),
+        monto: Number(r.monto),
+        fecha: r.fecha || 'Sin fecha',
+        estado: r.estado,
+        numero_operacion: r.numero_operacion,
+        comprobante_url: r.comprobante_pago_url || undefined,
+        detalle: `Inscripción${r.deportes ? ` (${r.deportes})` : ''}`
+      });
+    }
+
+    // 2. Pagos mensuales
+    const sqlPagos = `
+      SELECT 
+        pm.pago_id,
+        pm.alumno_id,
+        a.dni,
+        CONCAT(a.nombres, ' ', a.apellido_paterno, ' ', COALESCE(a.apellido_materno, '')) AS nombre_completo,
+        pm.mes,
+        pm.\`${colYear}\` AS anio,
+        pm.monto,
+        COALESCE(DATE_FORMAT(pm.fecha_pago, '%Y-%m-%d'), DATE_FORMAT(pm.created_at, '%Y-%m-%d')) AS fecha,
+        pm.estado,
+        pm.numero_operacion,
+        pm.comprobante_url
+      FROM pagos_mensuales pm
+      JOIN alumnos a ON pm.alumno_id = a.alumno_id
+      WHERE pm.numero_operacion LIKE ?
+      ORDER BY pm.pago_id DESC
+      LIMIT 10
+    `;
+    const rowsPagos = await executeReadOnlyQuery<mysql.RowDataPacket[]>(sqlPagos, [`%${clean}%`]);
+    for (const p of rowsPagos) {
+      results.push({
+        tipo: 'mensualidad',
+        alumno_id: Number(p.alumno_id),
+        dni: p.dni,
+        nombre_completo: p.nombre_completo.trim(),
+        monto: Number(p.monto),
+        fecha: p.fecha || 'Sin fecha',
+        estado: p.estado,
+        numero_operacion: p.numero_operacion,
+        comprobante_url: p.comprobante_url || undefined,
+        detalle: `Mensualidad ${p.mes} ${p.anio}`
+      });
+    }
+
+    return results;
+  }
+
+  /**
+   * Ranking de alumnos (por puntos o por mayor asistencia acumulada).
+   */
+  async getStudentRanking(deporteFilter?: string, mesFilter?: number, anioFilter?: number): Promise<JagRankingStudent[]> {
+    const tz = 'America/Lima';
+    const now = DateTime.now().setZone(tz);
+    const mes = mesFilter || now.month;
+    const anio = anioFilter || now.year;
+
+    let sql = `
+      SELECT 
+        a.alumno_id,
+        a.dni,
+        CONCAT(a.nombres, ' ', a.apellido_paterno, ' ', COALESCE(a.apellido_materno, '')) AS nombre_completo,
+        d.nombre AS deporte,
+        h.categoria,
+        COUNT(ast.asistencia_id) AS total_clases,
+        SUM(CASE WHEN ast.presente = 1 THEN 1 ELSE 0 END) AS presentes,
+        SUM(CASE WHEN ast.asistencia_puerta = 1 THEN 1 ELSE 0 END) AS puerta_ok
+      FROM asistencias ast
+      JOIN alumnos a ON ast.alumno_id = a.alumno_id
+      JOIN horarios h ON ast.horario_id = h.horario_id
+      JOIN deportes d ON h.deporte_id = d.deporte_id
+      WHERE MONTH(ast.fecha) = ? AND YEAR(ast.fecha) = ?
+    `;
+    const params: any[] = [mes, anio];
+    if (deporteFilter) {
+      sql += ' AND d.nombre LIKE ?';
+      params.push(`%${deporteFilter}%`);
+    }
+    sql += `
+      GROUP BY a.alumno_id, a.dni, a.nombres, a.apellido_paterno, a.apellido_materno, d.nombre, h.categoria
+      HAVING presentes > 0
+      ORDER BY presentes DESC, puerta_ok DESC
+      LIMIT 20
+    `;
+    const rows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(sql, params);
+
+    return rows.map((r, idx) => {
+      const tot = Number(r.total_clases) || 1;
+      const pres = Number(r.presentes);
+      return {
+        puesto: idx + 1,
+        alumno_id: Number(r.alumno_id),
+        dni: r.dni,
+        nombre_completo: r.nombre_completo.trim(),
+        deporte: r.deporte,
+        categoria: r.categoria || undefined,
+        puntos: pres * 10,
+        porcentaje_asistencia: Math.round((pres / tot) * 100),
+        clases_asistidas: pres,
+        total_clases: Number(r.total_clases)
+      };
+    });
+  }
+
+  /**
+   * Alumnos con 100% de asistencia (asistencia perfecta) en el mes (mínimo 4 clases evaluadas).
+   */
+  async getPerfectAttendance(mesFilter?: number, anioFilter?: number): Promise<JagRankingStudent[]> {
+    const tz = 'America/Lima';
+    const now = DateTime.now().setZone(tz);
+    const mes = mesFilter || now.month;
+    const anio = anioFilter || now.year;
+
+    const sql = `
+      SELECT 
+        a.alumno_id,
+        a.dni,
+        CONCAT(a.nombres, ' ', a.apellido_paterno, ' ', COALESCE(a.apellido_materno, '')) AS nombre_completo,
+        d.nombre AS deporte,
+        h.categoria,
+        COUNT(ast.asistencia_id) AS total_clases,
+        SUM(CASE WHEN ast.presente = 1 THEN 1 ELSE 0 END) AS presentes
+      FROM asistencias ast
+      JOIN alumnos a ON ast.alumno_id = a.alumno_id
+      JOIN horarios h ON ast.horario_id = h.horario_id
+      JOIN deportes d ON h.deporte_id = d.deporte_id
+      WHERE MONTH(ast.fecha) = ? AND YEAR(ast.fecha) = ?
+      GROUP BY a.alumno_id, a.dni, a.nombres, a.apellido_paterno, a.apellido_materno, d.nombre, h.categoria
+      HAVING total_clases >= 4 AND presentes = total_clases
+      ORDER BY total_clases DESC, a.apellido_paterno
+    `;
+    const rows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(sql, [mes, anio]);
+
+    return rows.map((r, idx) => ({
+      puesto: idx + 1,
+      alumno_id: Number(r.alumno_id),
+      dni: r.dni,
+      nombre_completo: r.nombre_completo.trim(),
+      deporte: r.deporte,
+      categoria: r.categoria || undefined,
+      puntos: Number(r.presentes) * 10,
+      porcentaje_asistencia: 100,
+      clases_asistidas: Number(r.presentes),
+      total_clases: Number(r.total_clases)
+    }));
   }
 }
 

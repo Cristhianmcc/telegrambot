@@ -17,6 +17,10 @@ import {
   renderAsistenciasAlumno,
   renderDocentesControl,
   renderDocenteAlumnosClase,
+  renderBirthdays,
+  renderDropoutRisk,
+  renderOperationSearch,
+  renderRanking,
   markdownToTelegramHtml,
   escapeHtml
 } from '../rendering/jaguares-templates.js';
@@ -29,7 +33,8 @@ import { registerAdminPanel } from './admin-panel.js';
 import {
   generateDebtorsExcelBuffer,
   generateStudentsExcelBuffer,
-  generateCapacityExcelBuffer
+  generateCapacityExcelBuffer,
+  generateAttendanceExcelBuffer
 } from '../reporting/excel-generator.js';
 import { sendDailyDigestToUser } from '../scheduler/daily-digest.js';
 
@@ -38,6 +43,10 @@ export const BOT_SLASH_COMMANDS = [
   { command: 'buscar', description: '🔍 Buscar alumno y WhatsApp de cobranza' },
   { command: 'asistencias', description: '📅 Ver historial de asistencias de un alumno (DNI)' },
   { command: 'docentes', description: '👨‍🏫 Control de docentes y toma de asistencia' },
+  { command: 'cumpleanos', description: '🎂 Alumnos que cumplen años (hoy/semana/mes)' },
+  { command: 'desercion', description: '📉 Alerta de alumnos con inasistencias críticas' },
+  { command: 'operacion', description: '🔢 Buscar pago por N° de operación bancaria' },
+  { command: 'ranking', description: '🏆 Ranking y alumnos con asistencia perfecta' },
   { command: 'comprobantes', description: '📸 Ver vouchers y comprobantes Yape/Plin' },
   { command: 'resumen', description: '🎓 Resumen general de la escuela' },
   { command: 'alumnos', description: '👥 Alumnos activos y por disciplina' },
@@ -80,10 +89,15 @@ export function createBot(token: string): Bot {
       .text('🔍 Buscar Alumno', 'action_prompt_search')
       .text('📅 Asistencias', 'action_prompt_asistencias')
       .row()
-      .text('📸 Vouchers Yape/Plin', 'action_vouchers')
       .text('👨‍🏫 Control Docentes', 'action_docentes_control')
+      .text('📸 Vouchers Yape/Plin', 'action_vouchers')
       .row()
-      .text('📊 Reportes Excel (.xlsx)', 'excel_menu')
+      .text('🎂 Cumpleaños', 'action_cumpleanos')
+      .text('📉 Alerta Deserción', 'action_desercion')
+      .row()
+      .text('🏆 Ranking Alumnos', 'action_ranking')
+      .text('📊 Excel (.xlsx)', 'excel_menu')
+      .row()
       .text('⏰ Alertas y Notificaciones', 'notif_menu');
   }
 
@@ -93,6 +107,7 @@ export function createBot(token: string): Bot {
       .text('👥 Padrón Alumnos (.xlsx)', 'excel_dl_students')
       .row()
       .text('🏟️ Horarios y Cupos (.xlsx)', 'excel_dl_capacity')
+      .text('📅 Asistencias (.xlsx)', 'excel_dl_attendance')
       .row()
       .text('🔙 Volver al Menú', 'action_back_menu');
   }
@@ -553,6 +568,75 @@ export function createBot(token: string): Bot {
     }
   });
 
+  // /cumpleanos [hoy | semana | mes]
+  bot.command(['cumpleanos', 'cumpleaños', 'cumple'], async (ctx) => {
+    const raw = ctx.match?.trim().toLowerCase() || 'hoy';
+    const periodo: 'hoy' | 'semana' | 'mes' =
+      raw.includes('mes') ? 'mes' : raw.includes('semana') ? 'semana' : 'hoy';
+    await ctx.replyWithChatAction('typing');
+    try {
+      const data = await jaguaresService.getBirthdays(periodo);
+      const view = renderBirthdays(data, periodo);
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar cumpleaños: ${err.message}`);
+    }
+  });
+
+  // /desercion (alerta de alumnos con inasistencias críticas)
+  bot.command(['desercion', 'deserción', 'faltas', 'inasistencias'], async (ctx) => {
+    await ctx.replyWithChatAction('typing');
+    try {
+      const data = await jaguaresService.getDropoutRisk();
+      const view = renderDropoutRisk(data);
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar alerta de deserción: ${err.message}`);
+    }
+  });
+
+  // /operacion <numero> (búsqueda anti-fraude de vouchers)
+  bot.command(['operacion', 'operación', 'voucher_op', 'numop'], async (ctx) => {
+    const numOp = ctx.match?.trim() || '';
+    if (!numOp || numOp.length < 2) {
+      await ctx.reply(
+        `🔢 <b>Búsqueda por N° de Operación Bancaria</b>\n\n` +
+        `Indica el número de operación del voucher (ej: <code>589055</code>):\n` +
+        `Ejemplo: <code>/operacion 589055</code>`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+    await ctx.replyWithChatAction('typing');
+    try {
+      const data = await jaguaresService.searchOperationNumber(numOp);
+      const view = renderOperationSearch(data, numOp);
+      await ctx.reply(view, { parse_mode: 'HTML' });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al buscar número de operación: ${err.message}`);
+    }
+  });
+
+  // /ranking [deporte]
+  bot.command(['ranking', 'top', 'mejores'], async (ctx) => {
+    const raw = ctx.match?.trim() || '';
+    await ctx.replyWithChatAction('typing');
+    try {
+      if (raw.toLowerCase().includes('perfect') || raw.toLowerCase().includes('100')) {
+        const data = await jaguaresService.getPerfectAttendance();
+        const view = renderRanking(data, 'Alumnos con Asistencia Perfecta (100%)');
+        await ctx.reply(view, { parse_mode: 'HTML' });
+      } else {
+        const data = await jaguaresService.getStudentRanking(raw || undefined);
+        const title = raw ? `Ranking de Alumnos · ${raw}` : 'Ranking de Alumnos del Mes';
+        const view = renderRanking(data, title);
+        await ctx.reply(view, { parse_mode: 'HTML' });
+      }
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar ranking: ${err.message}`);
+    }
+  });
+
   // /comprobantes
   bot.command(['comprobantes', 'vouchers'], async (ctx) => {
     const filter = ctx.match?.trim() || undefined;
@@ -901,6 +985,86 @@ export function createBot(token: string): Bot {
       });
     } catch (err: any) {
       await ctx.reply(`⚠️ Error generando Excel: ${err.message}`);
+    }
+  });
+
+  bot.callbackQuery('excel_dl_attendance', async (ctx) => {
+    await ctx.answerCallbackQuery({ text: '⏳ Generando reporte de asistencias...' });
+    try {
+      const buffer = await generateAttendanceExcelBuffer('este mes');
+      await ctx.replyWithDocument(new InputFile(buffer, 'Asistencias_Jaguares.xlsx'), {
+        caption: '📅 <b>Reporte Mensual de Asistencias</b>\nConsolidado de clases evaluadas, presentes, faltas y registros en puerta.',
+        parse_mode: 'HTML'
+      });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error generando Excel: ${err.message}`);
+    }
+  });
+
+  // --- CALLBACKS CUMPLEAÑOS ---
+  bot.callbackQuery('action_cumpleanos', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try {
+      const data = await jaguaresService.getBirthdays('hoy');
+      const view = renderBirthdays(data, 'hoy');
+      await ctx.editMessageText(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar cumpleaños: ${err.message}`);
+    }
+  });
+
+  bot.callbackQuery(/^cumple_(hoy|semana|mes)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const periodo = ctx.match[1] as 'hoy' | 'semana' | 'mes';
+    try {
+      const data = await jaguaresService.getBirthdays(periodo);
+      const view = renderBirthdays(data, periodo);
+      await ctx.editMessageText(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar cumpleaños: ${err.message}`);
+    }
+  });
+
+  // --- CALLBACKS DESERCIÓN ---
+  bot.callbackQuery(['action_desercion', 'action_desercion_refresh'], async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try {
+      const data = await jaguaresService.getDropoutRisk();
+      const view = renderDropoutRisk(data);
+      await ctx.editMessageText(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar alerta de deserción: ${err.message}`);
+    }
+  });
+
+  // --- CALLBACK RANKING ---
+  bot.callbackQuery('action_ranking', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try {
+      const data = await jaguaresService.getStudentRanking();
+      const view = renderRanking(data, 'Ranking de Alumnos del Mes');
+      const kb = new InlineKeyboard()
+        .text('⭐ Asistencia Perfecta (100%)', 'action_ranking_perfect')
+        .row()
+        .text('🔙 Volver al Menú', 'action_back_menu');
+      await ctx.editMessageText(view, { parse_mode: 'HTML', reply_markup: kb });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar ranking: ${err.message}`);
+    }
+  });
+
+  bot.callbackQuery('action_ranking_perfect', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try {
+      const data = await jaguaresService.getPerfectAttendance();
+      const view = renderRanking(data, 'Alumnos con Asistencia Perfecta (100%)');
+      const kb = new InlineKeyboard()
+        .text('🏆 Ver Ranking General', 'action_ranking')
+        .row()
+        .text('🔙 Volver al Menú', 'action_back_menu');
+      await ctx.editMessageText(view, { parse_mode: 'HTML', reply_markup: kb });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar asistencia perfecta: ${err.message}`);
     }
   });
 
@@ -1259,6 +1423,75 @@ export function createBot(token: string): Bot {
           addChatMessage(chatId, 'user', rawText);
           addChatMessage(chatId, 'assistant', reply);
           await ctx.reply(reply, { parse_mode: 'HTML' });
+          break;
+        }
+
+        case 'jag.birthdays': {
+          const periodo = match.slots.birthdayPeriod || 'hoy';
+          const data = await jaguaresService.getBirthdays(periodo);
+          const view = renderBirthdays(data, periodo);
+          addChatMessage(chatId, 'user', rawText);
+          addChatMessage(chatId, 'assistant', view.text);
+          await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+          break;
+        }
+
+        case 'jag.dropout_risk': {
+          const data = await jaguaresService.getDropoutRisk();
+          const view = renderDropoutRisk(data);
+          addChatMessage(chatId, 'user', rawText);
+          addChatMessage(chatId, 'assistant', view.text);
+          await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+          break;
+        }
+
+        case 'jag.ranking': {
+          if (match.slots.rankingFilter === 'perfect') {
+            const data = await jaguaresService.getPerfectAttendance();
+            const view = renderRanking(data, 'Alumnos con Asistencia Perfecta (100%)');
+            addChatMessage(chatId, 'user', rawText);
+            addChatMessage(chatId, 'assistant', view);
+            await ctx.reply(view, { parse_mode: 'HTML' });
+          } else {
+            const data = await jaguaresService.getStudentRanking();
+            const view = renderRanking(data, 'Ranking de Alumnos');
+            addChatMessage(chatId, 'user', rawText);
+            addChatMessage(chatId, 'assistant', view);
+            await ctx.reply(view, { parse_mode: 'HTML' });
+          }
+          break;
+        }
+
+        case 'jag.docentes_control': {
+          const data = await jaguaresService.getDocentesControl(match.slots.targetFecha);
+          const view = renderDocentesControl(data);
+          addChatMessage(chatId, 'user', rawText);
+          addChatMessage(chatId, 'assistant', view.text);
+          await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+          break;
+        }
+
+        case 'jag.operation_search': {
+          const numOp = match.slots.operationNumber || '';
+          const results = await jaguaresService.searchOperationNumber(numOp);
+          const view = renderOperationSearch(results, numOp);
+          addChatMessage(chatId, 'user', rawText);
+          addChatMessage(chatId, 'assistant', view);
+          await ctx.reply(view, { parse_mode: 'HTML' });
+          break;
+        }
+
+        case 'jag.asistencias_dni': {
+          const dni = match.slots.dni || '';
+          const data = await jaguaresService.getAsistenciasAlumno(dni);
+          if (!data) {
+            await ctx.reply(`⚠️ No se encontró ningún alumno con DNI <code>${escapeHtml(dni)}</code>.`, { parse_mode: 'HTML' });
+          } else {
+            const view = renderAsistenciasAlumno(data, 0);
+            addChatMessage(chatId, 'user', rawText);
+            addChatMessage(chatId, 'assistant', view.text);
+            await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+          }
           break;
         }
       }

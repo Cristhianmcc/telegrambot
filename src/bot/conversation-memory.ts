@@ -28,14 +28,20 @@ export function addChatMessage(chatId: number, role: 'user' | 'assistant', conte
   const now = Date.now();
   history = history.filter((m) => now - m.timestamp < EXPIRATION_MS);
 
-  // Limpiar etiquetas HTML de los mensajes guardados para no malgastar tokens
-  const cleanContent = content.replace(/<[^>]+>/g, '').trim();
+  // Limpiar etiquetas HTML de los mensajes guardados y truncar longitud para no malgastar tokens
+  let cleanContent = content.replace(/<[^>]+>/g, '').trim();
+  // El asistente suele responder textos largos formateados; truncamos a 220 caracteres para conservar contexto sin gastar miles de tokens
+  if (role === 'assistant' && cleanContent.length > 220) {
+    cleanContent = cleanContent.slice(0, 220) + '...';
+  } else if (role === 'user' && cleanContent.length > 150) {
+    cleanContent = cleanContent.slice(0, 150);
+  }
 
   history.push({ role, content: cleanContent, timestamp: now });
 
-  // Conservar los últimos 6 mensajes (3 rondas de interacción)
-  if (history.length > 6) {
-    history = history.slice(-6);
+  // Conservar los últimos 4 mensajes (2 rondas de interacción recientes)
+  if (history.length > 4) {
+    history = history.slice(-4);
   }
   chatHistories.set(chatId, history);
 }
