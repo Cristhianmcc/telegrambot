@@ -16,6 +16,13 @@ export type JaguaresIntent =
   | 'jag.docentes_control'
   | 'jag.operation_search'
   | 'jag.asistencias_dni'
+  | 'jag.discrepancies'
+  | 'jag.today_schedule'
+  | 'jag.capacity_alerts'
+  | 'jag.monthly_comparison'
+  | 'jag.payment_methods'
+  | 'jag.whatsapp_templates'
+  | 'jag.system_health'
   | 'general.help'
   | 'general.menu'
   | 'general.greeting'
@@ -143,6 +150,18 @@ export function routeMessage(rawText: string, options: { now?: Date; timezone?: 
       intent: 'jag.debt_summary',
       confidence: 0.95,
       slots: { period, rawText }
+    };
+  }
+
+  // 4b. Desglose de ingresos por método de pago (Yape, Plin, Transferencia) (0 tokens)
+  if (
+    /(?:metodos?\s+de\s+pago|formas?\s+de\s+pago|desglose\s+(?:de\s+)?pagos?|yape\s+vs\s+plin|yape\s+o\s+plin|ingresos?\s+por\s+metodo|^\/metodos?$|^\/metodos_pago$)/i.test(text) ||
+    /(?:cuanto|ingresos?).*(?:yape|plin)/i.test(text)
+  ) {
+    return {
+      intent: 'jag.payment_methods',
+      confidence: 0.98,
+      slots: { rawText }
     };
   }
 
@@ -289,6 +308,84 @@ export function routeMessage(rawText: string, options: { now?: Date; timezone?: 
       intent: 'jag.asistencias_dni',
       confidence: 0.98,
       slots: { dni: dniMatch[1], rawText }
+    };
+  }
+
+  // 15. Auditoría de inconsistencias: Puerta (QR) vs Docente (0 tokens)
+  if (
+    /(?:discrepancias?|inconsistencias?|puerta\s+(?:vs|versus)\s+(?:docente|profesor)|diferencias?\s+(?:de\s+)?asistencias?|^\/discrepancias?$)/i.test(text)
+  ) {
+    let targetFecha: string | undefined = undefined;
+    if (text.includes('ayer')) {
+      const target = options.now ? new Date(options.now.getTime() - 86400000) : new Date(Date.now() - 86400000);
+      targetFecha = target.toISOString().split('T')[0];
+    } else if (text.includes('hoy')) {
+      const target = options.now || new Date();
+      targetFecha = target.toISOString().split('T')[0];
+    }
+    return {
+      intent: 'jag.discrepancies',
+      confidence: 0.98,
+      slots: { targetFecha, rawText }
+    };
+  }
+
+  // 16. Agenda de clases de hoy en tiempo real (0 tokens)
+  if (
+    /(?:clases\s+de\s+hoy|horarios?\s+de\s+hoy|que\s+clases\s+hay\s+hoy|agenda\s+(?:de\s+)?hoy|turnos?\s+de\s+hoy|^\/hoy$|^\/agenda$)/i.test(text)
+  ) {
+    return {
+      intent: 'jag.today_schedule',
+      confidence: 0.98,
+      slots: { rawText }
+    };
+  }
+
+  // 17. Alertas de aforo y cupos críticos (0 tokens)
+  if (
+    /(?:aforo\s+critico|alertas?\s+de\s+aforo|horarios?\s+llenos?|cupos?\s+llenos?|saturaci[oó]n|^\/aforo$|^\/alertas_aforo$)/i.test(text) ||
+    text === 'aforo'
+  ) {
+    return {
+      intent: 'jag.capacity_alerts',
+      confidence: 0.98,
+      slots: { rawText }
+    };
+  }
+
+  // 18. Comparativa mes a mes MoM (0 tokens)
+  if (
+    /(?:comparativa|comparaci[oó]n|mes\s+a\s+mes|crecimiento\s+(?:mensual|mom)|respecto\s+al\s+mes\s+anterior|^\/comparativa$|^\/mom$|^\/crecimiento$)/i.test(text)
+  ) {
+    return {
+      intent: 'jag.monthly_comparison',
+      confidence: 0.98,
+      slots: { rawText }
+    };
+  }
+
+  // 20. Plantillas preformateadas de WhatsApp (0 tokens)
+  if (
+    /(?:plantillas?|mensajes?).*(?:whatsapp|cobranza|bienvenida)|^\/plantillas?$|^\/templates?$/i.test(text) ||
+    text === 'plantillas'
+  ) {
+    return {
+      intent: 'jag.whatsapp_templates',
+      confidence: 0.98,
+      slots: { rawText }
+    };
+  }
+
+  // 21. Diagnóstico y salud del sistema / MySQL ping (0 tokens)
+  if (
+    /(?:estado\s+del\s+sistema|salud\s+del\s+sistema|diagnostico|estado\s+del\s+servidor|ping\s+mysql|latencia\s+mysql|^\/sistema$|^\/salud$|^\/diagnostico$|^\/ping$)/i.test(text) ||
+    text === 'sistema' ||
+    text === 'salud'
+  ) {
+    return {
+      intent: 'jag.system_health',
+      confidence: 0.98,
+      slots: { rawText }
     };
   }
 

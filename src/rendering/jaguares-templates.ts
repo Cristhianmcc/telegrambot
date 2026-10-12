@@ -16,7 +16,13 @@ import {
   JagBirthdayStudent,
   JagDropoutRiskStudent,
   JagOperationSearchResult,
-  JagRankingStudent
+  JagRankingStudent,
+  JagAttendanceDiscrepancy,
+  JagTodayScheduleItem,
+  JagCapacityAlert,
+  JagMonthlyComparison,
+  JagPaymentMethodBreakdown,
+  JagSystemHealth
 } from '../contracts/jaguares.js';
 
 export function escapeHtml(str: string): string {
@@ -684,5 +690,262 @@ export function renderRanking(
 
   return text;
 }
+
+/**
+ * Renderiza la auditoría de inconsistencias: Puerta (QR) vs Docente.
+ */
+export function renderAttendanceDiscrepancies(
+  items: JagAttendanceDiscrepancy[],
+  fechaConsultada: string
+): { text: string; keyboard: InlineKeyboard } {
+  let text = `🚪 <b>Auditoría de Asistencias: Puerta (QR) vs Docente</b>\n`;
+  text += `📅 Fecha evaluada: <b>${escapeHtml(fechaConsultada)}</b>\n\n`;
+
+  if (items.length === 0) {
+    text += `✅ <b>¡Todo en orden!</b>\n`;
+    text += `No se encontraron discrepancias en esta fecha. Todos los alumnos presentes coinciden con su registro de puerta física.\n`;
+    const kb = new InlineKeyboard().text('🔙 Volver al Menú', 'action_back_menu');
+    return { text, keyboard: kb };
+  }
+
+  const puertaSinDoc = items.filter((i) => i.tipo_discrepancia === 'puerta_sin_docente');
+  const docSinPuerta = items.filter((i) => i.tipo_discrepancia === 'docente_sin_puerta');
+
+  text += `⚠️ Inconsistencias detectadas: <b>${items.length}</b>\n`;
+  text += `• 🚪 Marcó puerta pero tiene falta del profesor: <b>${puertaSinDoc.length}</b>\n`;
+  text += `• 👨‍🏫 Presente del profesor pero sin puerta: <b>${docSinPuerta.length}</b>\n\n`;
+
+  const kb = new InlineKeyboard();
+
+  items.slice(0, 8).forEach((item, idx) => {
+    const icon = item.tipo_discrepancia === 'puerta_sin_docente' ? '🚪❓' : '👨‍🏫❓';
+    const desc = item.tipo_discrepancia === 'puerta_sin_docente'
+      ? `Marcó puerta (${item.hora_puerta || 'S/H'}) pero docente puso <b>FALTA</b>`
+      : `Docente puso <b>PRESENTE</b> pero <b>NO marcó puerta</b>`;
+
+    text += `${idx + 1}. ${icon} <b>${escapeHtml(item.nombre_completo)}</b> (DNI: <code>${escapeHtml(item.dni)}</code>)\n`;
+    text += `   🏅 ${escapeHtml(item.deporte)} · 🕒 ${escapeHtml(item.horario)}\n`;
+    if (item.profesor) text += `   👨‍🏫 Profesor: <i>${escapeHtml(item.profesor)}</i>\n`;
+    text += `   🚨 ${desc}\n\n`;
+
+    const wa = buildWhatsAppLink(item.telefono, item.nombre_completo, item.apoderado);
+    if (wa && idx < 3) {
+      kb.url(`💬 WA: ${item.nombre_completo.split(' ')[0]}`, wa).row();
+    }
+  });
+
+  if (items.length > 8) {
+    text += `<i>... y ${items.length - 8} alumnos más con discrepancias.</i>\n\n`;
+  }
+
+  kb.text('🔄 Actualizar', 'action_discrepancias')
+    .text('🔙 Volver', 'action_back_menu');
+
+  return { text, keyboard: kb };
+}
+
+/**
+ * Renderiza la agenda de clases y turnos de hoy en tiempo real.
+ */
+export function renderTodaySchedule(
+  items: JagTodayScheduleItem[],
+  diaNombre: string,
+  fechaStr: string
+): { text: string; keyboard: InlineKeyboard } {
+  let text = `📅 <b>Agenda de Clases de Hoy · ${escapeHtml(diaNombre)}</b>\n`;
+  text += `🗓️ Fecha: <b>${escapeHtml(fechaStr)}</b> · Clases programadas: <b>${items.length}</b>\n\n`;
+
+  if (items.length === 0) {
+    text += `<i>Hoy no hay clases regulares programadas en el sistema.</i>\n`;
+    const kb = new InlineKeyboard().text('🔙 Volver al Menú', 'action_back_menu');
+    return { text, keyboard: kb };
+  }
+
+  const kb = new InlineKeyboard();
+
+  items.forEach((item) => {
+    let sportEmoji = '🏅';
+    const depNorm = item.deporte.toLowerCase();
+    if (depNorm.includes('futbol')) sportEmoji = '⚽';
+    else if (depNorm.includes('voley')) sportEmoji = '🏐';
+    else if (depNorm.includes('basquet') || depNorm.includes('básquet')) sportEmoji = '🏀';
+    else if (depNorm.includes('fit') || depNorm.includes('gym')) sportEmoji = '💪';
+
+    const estadoBadge = item.estado_asistencia === 'pasada'
+      ? `✅ Lista pasada (${item.total_presentes_hoy} presentes | 🚪 ${item.total_puerta_hoy} puerta)`
+      : item.estado_asistencia === 'en_curso'
+      ? `⏳ En curso`
+      : `🔜 Próximo turno`;
+
+    text += `${sportEmoji} <b>${escapeHtml(item.deporte)}</b> ${item.categoria ? `(${escapeHtml(item.categoria)})` : ''}\n`;
+    text += `   🕒 <b>${item.hora_inicio} - ${item.hora_fin}</b>\n`;
+    if (item.profesor) text += `   👨‍🏫 Profesor: <i>${escapeHtml(item.profesor)}</i>\n`;
+    text += `   👥 Ocupación: <b>${item.cupos_ocupados}/${item.cupo_maximo}</b> alumnos\n`;
+    text += `   📊 Estado: <b>${estadoBadge}</b>\n\n`;
+  });
+
+  kb.text('🔄 Actualizar Agenda', 'action_today_schedule')
+    .text('🔙 Volver', 'action_back_menu');
+
+  return { text, keyboard: kb };
+}
+
+/**
+ * Renderiza alertas de aforo y horarios con cupos críticos o saturados.
+ */
+export function renderCapacityAlerts(
+  alerts: JagCapacityAlert[]
+): { text: string; keyboard: InlineKeyboard } {
+  let text = `🏟️ <b>Alertas de Aforo y Cupos Críticos</b>\n\n`;
+
+  const llenos = alerts.filter((a) => a.nivel === 'lleno');
+  const criticos = alerts.filter((a) => a.nivel === 'critico');
+  const medios = alerts.filter((a) => a.nivel === 'medio');
+
+  text += `📊 <b>Resumen General de Aforo:</b>\n`;
+  text += `🔴 Cupos Llenos (100%): <b>${llenos.length}</b> horarios\n`;
+  text += `🟡 Estado Crítico (85%-99%): <b>${criticos.length}</b> horarios\n`;
+  text += `🟢 Disponibles (&lt;85%): <b>${alerts.length - llenos.length - criticos.length}</b> horarios\n\n`;
+
+  const prioritarios = [...llenos, ...criticos, ...medios].slice(0, 10);
+
+  if (prioritarios.length === 0) {
+    text += `✅ <i>Todos los horarios tienen cupos holgados y disponibles actualmente.</i>\n`;
+  } else {
+    text += `🚨 <b>Horarios con mayor demanda:</b>\n`;
+    prioritarios.forEach((a, idx) => {
+      const badge = a.nivel === 'lleno' ? '🔴 LLENO' : a.nivel === 'critico' ? '🟡 CRÍTICO' : '🟢 MEDIO';
+      text += `${idx + 1}. <b>${escapeHtml(a.deporte)}</b> (${escapeHtml(a.dia)} ${a.hora_inicio}-${a.hora_fin})\n`;
+      text += `   📊 ${badge}: <b>${a.cupos_ocupados}/${a.cupo_maximo}</b> (${a.porcentaje_ocupacion}%) · <b>${a.vacantes_disponibles} vacantes</b>\n\n`;
+    });
+  }
+
+  const kb = new InlineKeyboard()
+    .text('📥 Descargar Excel de Cupos', 'excel_dl_capacity')
+    .row()
+    .text('🔙 Volver al Menú', 'action_back_menu');
+
+  return { text, keyboard: kb };
+}
+
+/**
+ * Renderiza la comparativa mes a mes (crecimiento MoM).
+ */
+export function renderMonthlyComparison(
+  comp: JagMonthlyComparison
+): { text: string; keyboard: InlineKeyboard } {
+  let text = `📈 <b>Comparativa de Crecimiento · Jaguares BI</b>\n`;
+  text += `Comparando: <b>${escapeHtml(comp.mes_actual)} ${comp.anio_actual}</b> vs <b>${escapeHtml(comp.mes_anterior)} ${comp.anio_anterior}</b>\n\n`;
+
+  const iconIng = comp.variacion_ingresos_pct >= 0 ? '🟢 📈' : '🔴 📉';
+  const iconInsc = comp.variacion_inscripciones_pct >= 0 ? '🟢 📈' : '🔴 📉';
+
+  text += `💰 <b>Ingresos Recaudados (Confirmados):</b>\n`;
+  text += `• ${comp.mes_actual}: <b>${formatSoles(comp.ingresos_actual)}</b>\n`;
+  text += `• ${comp.mes_anterior}: ${formatSoles(comp.ingresos_anterior)}\n`;
+  text += `• Variación: ${iconIng} <b>${comp.variacion_ingresos_pct >= 0 ? '+' : ''}${comp.variacion_ingresos_pct}%</b>\n\n`;
+
+  text += `🆕 <b>Nuevas Matrículas / Inscripciones:</b>\n`;
+  text += `• ${comp.mes_actual}: <b>${comp.inscripciones_actual}</b> nuevos alumnos\n`;
+  text += `• ${comp.mes_anterior}: ${comp.inscripciones_anterior} nuevos alumnos\n`;
+  text += `• Variación: ${iconInsc} <b>${comp.variacion_inscripciones_pct >= 0 ? '+' : ''}${comp.variacion_inscripciones_pct}%</b>\n\n`;
+
+  text += `👥 <b>Padrón de Alumnos Activos:</b> <b>${comp.alumnos_activos}</b> alumnos\n`;
+  text += `⏳ <b>Cobranzas Pendientes (Deuda):</b> ${formatSoles(comp.deuda_actual)} (mes anterior: ${formatSoles(comp.deuda_anterior)})\n\n`;
+
+  const kb = new InlineKeyboard()
+    .text('📊 Ver Resumen General', 'action_overview')
+    .text('🔙 Volver', 'action_back_menu');
+
+  return { text, keyboard: kb };
+}
+
+/**
+ * Renderiza el desglose financiero por método de pago.
+ */
+export function renderPaymentMethodsBreakdown(
+  data: { methods: JagPaymentMethodBreakdown[]; totalMonto: number; totalPagos: number; mesNombre: string }
+): { text: string; keyboard: InlineKeyboard } {
+  let text = `💳 <b>Desglose por Método de Pago</b>\n`;
+  text += `📅 Período: <b>${escapeHtml(data.mesNombre)}</b>\n\n`;
+  text += `💰 <b>Total Recaudado:</b> <b>${formatSoles(data.totalMonto)}</b> (${data.totalPagos} pagos confirmados)\n\n`;
+
+  if (data.methods.length === 0) {
+    text += `<i>No hay pagos registrados para este período aún.</i>\n`;
+  } else {
+    data.methods.forEach((m) => {
+      let icon = '💳';
+      const mNorm = m.metodo.toLowerCase();
+      if (mNorm.includes('yape')) icon = '🟣';
+      else if (mNorm.includes('plin')) icon = '🔵';
+      else if (mNorm.includes('bcp') || mNorm.includes('bbva') || mNorm.includes('transfer')) icon = '🏦';
+      else if (mNorm.includes('efectivo')) icon = '💵';
+
+      text += `${icon} <b>${escapeHtml(m.metodo)}:</b> <b>${formatSoles(m.total_monto)}</b> (${m.porcentaje_total}%)\n`;
+      text += `   📊 Cantidad de pagos: <b>${m.cantidad_pagos}</b> operaciones\n\n`;
+    });
+  }
+
+  const kb = new InlineKeyboard()
+    .text('📸 Ver Vouchers', 'action_vouchers')
+    .text('🔙 Volver', 'action_back_menu');
+
+  return { text, keyboard: kb };
+}
+
+/**
+ * Renderiza el menú interactivo de plantillas de difusión por WhatsApp.
+ */
+export function renderWhatsAppTemplatesMenu(): { text: string; keyboard: InlineKeyboard } {
+  let text = `💬 <b>Generador de Plantillas Rápidas para WhatsApp</b>\n\n`;
+  text += `Elige una plantilla para ver el texto preformateado y abrirlo directamente en WhatsApp:\n\n`;
+  text += `1️⃣ <b>Recordatorio Amable de Cobro de Mensualidad</b>\n`;
+  text += `2️⃣ <b>Mensaje de Bienvenida al Alumno</b>\n`;
+  text += `3️⃣ <b>Aviso de Feriado o Clases Suspendidas</b>\n`;
+  text += `4️⃣ <b>Felicitación por Asistencia Perfecta (100%)</b>\n`;
+
+  const kb = new InlineKeyboard()
+    .text('💬 1. Recordatorio Cobro', 'tmpl_cobro')
+    .text('💬 2. Bienvenida', 'tmpl_bienvenida')
+    .row()
+    .text('💬 3. Aviso Feriado', 'tmpl_feriado')
+    .text('💬 4. Asistencia 100%', 'tmpl_asistencia')
+    .row()
+    .text('🔙 Volver al Menú', 'action_back_menu');
+
+  return { text, keyboard: kb };
+}
+
+/**
+ * Renderiza el diagnóstico y salud operativa técnica del bot y MySQL.
+ */
+export function renderSystemHealth(
+  health: JagSystemHealth
+): { text: string; keyboard: InlineKeyboard } {
+  const dbIcon = health.db_status === 'online' ? '🟢 Online' : '🔴 Error de conexión';
+
+  let text = `🩺 <b>Diagnóstico y Salud del Sistema · Escuela Jaguares</b>\n\n`;
+  text += `🗄️ <b>Base de Datos MySQL:</b> ${dbIcon} (${health.db_latency_ms} ms de latencia)\n`;
+  text += `🔔 <b>Vigilante de Pagos en Vivo:</b> 🟢 ${escapeHtml(health.watcher_status)}\n`;
+  if (health.last_payment_date) {
+    text += `   🕒 Último comprobante recibido: <b>${escapeHtml(health.last_payment_date)}</b>\n`;
+  }
+  text += `👥 <b>Total Alumnos en Sistema:</b> <b>${health.total_alumnos}</b>\n`;
+  text += `🎓 <b>Inscripciones Activas:</b> <b>${health.total_inscripciones_activas}</b>\n`;
+  text += `🏟️ <b>Horarios de Entrenamiento:</b> <b>${health.total_horarios_activos}</b>\n\n`;
+
+  const upHours = Math.floor(health.uptime_seconds / 3600);
+  const upMins = Math.floor((health.uptime_seconds % 3600) / 60);
+  text += `⏱️ <b>Tiempo activo (Uptime):</b> ${upHours}h ${upMins}m\n`;
+  text += `🕒 <b>Hora Oficial Perú:</b> <code>${health.server_time}</code>\n\n`;
+  text += `<i>El bot opera con conexiones de solo lectura protegidas y caché de optimización de tokens activada.</i>`;
+
+  const kb = new InlineKeyboard()
+    .text('🔄 Actualizar Diagnóstico', 'action_system_health')
+    .text('🔙 Volver al Menú', 'action_back_menu');
+
+  return { text, keyboard: kb };
+}
+
 
 

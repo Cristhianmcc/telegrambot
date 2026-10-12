@@ -115,4 +115,83 @@ describe('RuleRouter for Jaguares', () => {
     const m4 = routeMessage('¿cupo en futbol?');
     expect(m4?.intent).toBe('jag.capacity');
   });
+
+  it('reconoce auditoría de discrepancias puerta vs docente -> jag.discrepancies', () => {
+    const m1 = routeMessage('/discrepancias');
+    expect(m1?.intent).toBe('jag.discrepancies');
+
+    const m2 = routeMessage('inconsistencias entre puerta y docente');
+    expect(m2?.intent).toBe('jag.discrepancies');
+
+    const m3 = routeMessage('discrepancias de ayer');
+    expect(m3?.intent).toBe('jag.discrepancies');
+    expect(m3?.slots.targetFecha).toBeDefined();
+  });
+
+  it('reconoce agenda de clases de hoy -> jag.today_schedule', () => {
+    const m1 = routeMessage('/hoy');
+    expect(m1?.intent).toBe('jag.today_schedule');
+
+    const m2 = routeMessage('¿Qué clases hay hoy?');
+    expect(m2?.intent).toBe('jag.today_schedule');
+
+    const m3 = routeMessage('agenda de hoy');
+    expect(m3?.intent).toBe('jag.today_schedule');
+  });
+
+  it('reconoce alertas de aforo y cupos críticos -> jag.capacity_alerts', () => {
+    const m1 = routeMessage('/aforo');
+    expect(m1?.intent).toBe('jag.capacity_alerts');
+
+    const m2 = routeMessage('horarios con aforo critico');
+    expect(m2?.intent).toBe('jag.capacity_alerts');
+
+    const m3 = routeMessage('¿Cuáles son los horarios llenos?');
+    expect(m3?.intent).toBe('jag.capacity_alerts');
+  });
+
+  it('reconoce comparativa mes a mes MoM -> jag.monthly_comparison', () => {
+    const m1 = routeMessage('/comparativa');
+    expect(m1?.intent).toBe('jag.monthly_comparison');
+
+    const m2 = routeMessage('comparativa mes a mes');
+    expect(m2?.intent).toBe('jag.monthly_comparison');
+
+    const m3 = routeMessage('crecimiento mensual');
+    expect(m3?.intent).toBe('jag.monthly_comparison');
+  });
+
+  it('reconoce desglose de métodos de pago -> jag.payment_methods', () => {
+    const m1 = routeMessage('/metodos');
+    expect(m1?.intent).toBe('jag.payment_methods');
+
+    const m2 = routeMessage('desglose de metodos de pago');
+    expect(m2?.intent).toBe('jag.payment_methods');
+
+    const m3 = routeMessage('¿Cuánto se cobró por Yape vs Plin?');
+    expect(m3?.intent).toBe('jag.payment_methods');
+  });
+
+  it('reconoce plantillas de difusión por WhatsApp -> jag.whatsapp_templates', () => {
+    const m1 = routeMessage('/plantillas');
+    expect(m1?.intent).toBe('jag.whatsapp_templates');
+
+    const m2 = routeMessage('plantillas de whatsapp');
+    expect(m2?.intent).toBe('jag.whatsapp_templates');
+
+    const m3 = routeMessage('mensajes para whatsapp cobranza');
+    expect(m3?.intent).toBe('jag.whatsapp_templates');
+  });
+
+  it('reconoce diagnóstico y salud del sistema -> jag.system_health', () => {
+    const m1 = routeMessage('/sistema');
+    expect(m1?.intent).toBe('jag.system_health');
+
+    const m2 = routeMessage('estado del sistema');
+    expect(m2?.intent).toBe('jag.system_health');
+
+    const m3 = routeMessage('salud del sistema y ping mysql');
+    expect(m3?.intent).toBe('jag.system_health');
+  });
 });
+

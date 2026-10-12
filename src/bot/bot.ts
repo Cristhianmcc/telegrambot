@@ -21,6 +21,13 @@ import {
   renderDropoutRisk,
   renderOperationSearch,
   renderRanking,
+  renderAttendanceDiscrepancies,
+  renderTodaySchedule,
+  renderCapacityAlerts,
+  renderMonthlyComparison,
+  renderPaymentMethodsBreakdown,
+  renderWhatsAppTemplatesMenu,
+  renderSystemHealth,
   markdownToTelegramHtml,
   escapeHtml
 } from '../rendering/jaguares-templates.js';
@@ -64,6 +71,13 @@ export const BOT_SLASH_COMMANDS = [
   { command: 'buscar', description: '🔍 Buscar alumno y WhatsApp de cobranza' },
   { command: 'asistencias', description: '📅 Ver historial de asistencias de un alumno (DNI)' },
   { command: 'docentes', description: '👨‍🏫 Control de docentes y toma de asistencia' },
+  { command: 'discrepancias', description: '🚪 Auditoría: Puerta (QR) vs Docente' },
+  { command: 'hoy', description: '📅 Agenda y clases programadas para hoy' },
+  { command: 'aforo', description: '🚨 Alertas de cupos y aforo crítico' },
+  { command: 'comparativa', description: '📈 Crecimiento y comparativa mes a mes (MoM)' },
+  { command: 'metodos', description: '💳 Desglose de ingresos por método de pago' },
+  { command: 'plantillas', description: '💬 Plantillas predefinidas para WhatsApp' },
+  { command: 'sistema', description: '🩺 Diagnóstico, latencia MySQL y salud del bot' },
   { command: 'cumpleanos', description: '🎂 Alumnos que cumplen años (hoy/semana/mes)' },
   { command: 'desercion', description: '📉 Alerta de alumnos con inasistencias críticas' },
   { command: 'operacion', description: '🔢 Buscar pago por N° de operación bancaria' },
@@ -119,7 +133,17 @@ export function createBot(token: string): Bot {
       .text('🏆 Ranking Alumnos', 'action_ranking')
       .text('📊 Excel (.xlsx)', 'excel_menu')
       .row()
-      .text('⏰ Alertas y Notificaciones', 'notif_menu');
+      .text('🚪 Discrepancias QR', 'action_discrepancias')
+      .text('📅 Clases de Hoy', 'action_today_schedule')
+      .row()
+      .text('🚨 Alertas de Aforo', 'action_capacity_alerts')
+      .text('📈 Comparativa MoM', 'action_monthly_comparison')
+      .row()
+      .text('💳 Métodos de Pago', 'action_payment_methods')
+      .text('💬 Plantillas WA', 'action_whatsapp_templates')
+      .row()
+      .text('🩺 Diagnóstico Bot', 'action_system_health')
+      .text('⏰ Notificaciones', 'notif_menu');
   }
 
   function getExcelKeyboard(): InlineKeyboard {
@@ -778,6 +802,93 @@ export function createBot(token: string): Bot {
     await ctx.reply(helpText, { parse_mode: 'HTML' });
   });
 
+  // /discrepancias [fecha | ayer | hoy]
+  bot.command(['discrepancias', 'inconsistencias'], async (ctx) => {
+    const rawArgs = ctx.match?.trim() || '';
+    await ctx.replyWithChatAction('typing');
+    try {
+      let targetFecha: string | undefined = undefined;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(rawArgs)) {
+        targetFecha = rawArgs;
+      } else if (rawArgs.toLowerCase() === 'ayer') {
+        targetFecha = DateTime.now().setZone('America/Lima').minus({ days: 1 }).toFormat('yyyy-MM-dd');
+      } else if (rawArgs.toLowerCase() === 'hoy') {
+        targetFecha = DateTime.now().setZone('America/Lima').toFormat('yyyy-MM-dd');
+      }
+      const res = await jaguaresService.getAttendanceDiscrepancies(targetFecha);
+      const view = renderAttendanceDiscrepancies(res.items, res.fechaConsultada);
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar discrepancias: ${err.message}`);
+    }
+  });
+
+  // /hoy
+  bot.command(['hoy', 'agenda'], async (ctx) => {
+    await ctx.replyWithChatAction('typing');
+    try {
+      const res = await jaguaresService.getTodaySchedule();
+      const view = renderTodaySchedule(res.items, res.diaNombre, res.fechaStr);
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar agenda de hoy: ${err.message}`);
+    }
+  });
+
+  // /aforo
+  bot.command(['aforo', 'alertas_aforo'], async (ctx) => {
+    await ctx.replyWithChatAction('typing');
+    try {
+      const alerts = await jaguaresService.getCapacityAlerts();
+      const view = renderCapacityAlerts(alerts);
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar alertas de aforo: ${err.message}`);
+    }
+  });
+
+  // /comparativa
+  bot.command(['comparativa', 'mom', 'crecimiento'], async (ctx) => {
+    await ctx.replyWithChatAction('typing');
+    try {
+      const comp = await jaguaresService.getMonthlyComparison();
+      const view = renderMonthlyComparison(comp);
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar comparativa: ${err.message}`);
+    }
+  });
+
+  // /metodos
+  bot.command(['metodos', 'metodos_pago', 'formas_pago'], async (ctx) => {
+    await ctx.replyWithChatAction('typing');
+    try {
+      const data = await jaguaresService.getPaymentMethodsBreakdown();
+      const view = renderPaymentMethodsBreakdown(data);
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar métodos de pago: ${err.message}`);
+    }
+  });
+
+  // /plantillas
+  bot.command(['plantillas', 'templates'], async (ctx) => {
+    const view = renderWhatsAppTemplatesMenu();
+    await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+  });
+
+  // /sistema
+  bot.command(['sistema', 'salud', 'diagnostico', 'ping'], async (ctx) => {
+    await ctx.replyWithChatAction('typing');
+    try {
+      const health = await jaguaresService.getSystemHealth();
+      const view = renderSystemHealth(health);
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al diagnosticar sistema: ${err.message}`);
+    }
+  });
+
   // --- CALLBACKS DEL MENÚ PRINCIPAL ---
   bot.callbackQuery('action_overview', async (ctx) => {
     await ctx.answerCallbackQuery();
@@ -1203,6 +1314,142 @@ export function createBot(token: string): Bot {
     }
   });
 
+  // --- CALLBACKS DE LAS 7 NUEVAS FUNCIONALIDADES COMERCIALES ---
+  bot.callbackQuery('action_discrepancias', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try {
+      const res = await jaguaresService.getAttendanceDiscrepancies();
+      const view = renderAttendanceDiscrepancies(res.items, res.fechaConsultada);
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar discrepancias: ${err.message}`);
+    }
+  });
+
+  bot.callbackQuery('action_today_schedule', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try {
+      const res = await jaguaresService.getTodaySchedule();
+      const view = renderTodaySchedule(res.items, res.diaNombre, res.fechaStr);
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar clases de hoy: ${err.message}`);
+    }
+  });
+
+  bot.callbackQuery('action_capacity_alerts', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try {
+      const alerts = await jaguaresService.getCapacityAlerts();
+      const view = renderCapacityAlerts(alerts);
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar alertas de aforo: ${err.message}`);
+    }
+  });
+
+  bot.callbackQuery('action_monthly_comparison', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try {
+      const comp = await jaguaresService.getMonthlyComparison();
+      const view = renderMonthlyComparison(comp);
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar comparativa: ${err.message}`);
+    }
+  });
+
+  bot.callbackQuery('action_payment_methods', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try {
+      const data = await jaguaresService.getPaymentMethodsBreakdown();
+      const view = renderPaymentMethodsBreakdown(data);
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al consultar métodos de pago: ${err.message}`);
+    }
+  });
+
+  bot.callbackQuery('action_whatsapp_templates', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const view = renderWhatsAppTemplatesMenu();
+    await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+  });
+
+  bot.callbackQuery('tmpl_cobro', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const text =
+      `💬 <b>Plantilla 1: Recordatorio Amable de Cobro de Mensualidad</b>\n\n` +
+      `<code>Estimado(a) padre de familia, reciba un cordial saludo de la Escuela Deportiva Jaguares 🐆.\n\n` +
+      `Le recordamos amablemente que la mensualidad del presente mes correspondiente a su menor hijo(a) en su disciplina ya se encuentra disponible para su cancelación.\n\n` +
+      `💳 Métodos de pago oficiales:\n` +
+      `• Yape / Plin\n` +
+      `• Transferencia BCP / BBVA\n\n` +
+      `Por favor, enviar una foto o captura del comprobante por este medio para registrarlo en el sistema. ¡Muchas gracias por su confianza y puntualidad! 🙏</code>\n\n` +
+      `💡 <i>Toca el recuadro para copiar el texto directamente en tu portapapeles.</i>`;
+    const kb = new InlineKeyboard()
+      .text('📋 Ver otras plantillas', 'action_whatsapp_templates')
+      .text('🔙 Volver al Menú', 'action_back_menu');
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
+  });
+
+  bot.callbackQuery('tmpl_bienvenida', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const text =
+      `💬 <b>Plantilla 2: Mensaje de Bienvenida al Alumno</b>\n\n` +
+      `<code>¡Hola y bienvenidos a la familia Jaguares! 🎉🐆\n\n` +
+      `Nos alegra mucho contar con ustedes esta temporada. Les recordamos que para su primera clase es indispensable:\n` +
+      `• Traer ropa deportiva cómoda y tomatodo con agua.\n` +
+      `• Llegar 10 minutos antes del horario programado.\n` +
+      `• Mostrar su código QR de ingreso en la puerta de la sede.\n\n` +
+      `¡Estamos listos para aprender, entrenar y divertirnos al máximo! 💪🏅</code>\n\n` +
+      `💡 <i>Toca el recuadro para copiar el texto directamente en tu portapapeles.</i>`;
+    const kb = new InlineKeyboard()
+      .text('📋 Ver otras plantillas', 'action_whatsapp_templates')
+      .text('🔙 Volver al Menú', 'action_back_menu');
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
+  });
+
+  bot.callbackQuery('tmpl_feriado', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const text =
+      `💬 <b>Plantilla 3: Aviso de Feriado o Clases Suspendidas</b>\n\n` +
+      `<code>Estimados padres de familia y alumnos de la Escuela Jaguares 🐆:\n\n` +
+      `Les informamos que por motivo de feriado nacional / mantenimiento de instalaciones, NO habrá clases programadas el día de hoy.\n\n` +
+      `Las actividades deportivas se reanudarán con total normalidad en su siguiente turno y horario habitual.\n\n` +
+      `Agradecemos su comprensión y les deseamos un excelente día de descanso en familia. 🌟</code>\n\n` +
+      `💡 <i>Toca el recuadro para copiar el texto directamente en tu portapapeles.</i>`;
+    const kb = new InlineKeyboard()
+      .text('📋 Ver otras plantillas', 'action_whatsapp_templates')
+      .text('🔙 Volver al Menú', 'action_back_menu');
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
+  });
+
+  bot.callbackQuery('tmpl_asistencia', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const text =
+      `💬 <b>Plantilla 4: Felicitación por Asistencia Perfecta (100%)</b>\n\n` +
+      `<code>¡Felicitaciones a toda la familia! 🏆🐆\n\n` +
+      `Desde la dirección y el cuerpo técnico de la Escuela Jaguares queremos felicitar a su menor hijo(a) por haber alcanzado una ASISTENCIA PERFECTA (100%) en sus entrenamientos durante este mes.\n\n` +
+      `Su puntualidad, esfuerzo y compromiso son un verdadero ejemplo para todos sus compañeros. ¡A seguir entrenando con la misma garra y pasión! 🥇👏</code>\n\n` +
+      `💡 <i>Toca el recuadro para copiar el texto directamente en tu portapapeles.</i>`;
+    const kb = new InlineKeyboard()
+      .text('📋 Ver otras plantillas', 'action_whatsapp_templates')
+      .text('🔙 Volver al Menú', 'action_back_menu');
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
+  });
+
+  bot.callbackQuery('action_system_health', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try {
+      const health = await jaguaresService.getSystemHealth();
+      const view = renderSystemHealth(health);
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Error al diagnosticar el sistema: ${err.message}`);
+    }
+  });
+
   // Procesamiento unificado de consultas en lenguaje natural (texto o voz)
   async function handleNaturalLanguageQuery(ctx: any, rawText: string) {
     const chatId = ctx.chat.id;
@@ -1615,6 +1862,68 @@ export function createBot(token: string): Bot {
             addChatMessage(chatId, 'assistant', view.text);
             await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
           }
+          break;
+        }
+
+        case 'jag.discrepancies': {
+          const res = await jaguaresService.getAttendanceDiscrepancies(match.slots.targetFecha);
+          const view = renderAttendanceDiscrepancies(res.items, res.fechaConsultada);
+          addChatMessage(chatId, 'user', rawText);
+          addChatMessage(chatId, 'assistant', view.text);
+          await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+          break;
+        }
+
+        case 'jag.today_schedule': {
+          const res = await jaguaresService.getTodaySchedule();
+          const view = renderTodaySchedule(res.items, res.diaNombre, res.fechaStr);
+          addChatMessage(chatId, 'user', rawText);
+          addChatMessage(chatId, 'assistant', view.text);
+          await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+          break;
+        }
+
+        case 'jag.capacity_alerts': {
+          const alerts = await jaguaresService.getCapacityAlerts();
+          const view = renderCapacityAlerts(alerts);
+          addChatMessage(chatId, 'user', rawText);
+          addChatMessage(chatId, 'assistant', view.text);
+          await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+          break;
+        }
+
+        case 'jag.monthly_comparison': {
+          const comp = await jaguaresService.getMonthlyComparison();
+          const view = renderMonthlyComparison(comp);
+          addChatMessage(chatId, 'user', rawText);
+          addChatMessage(chatId, 'assistant', view.text);
+          await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+          break;
+        }
+
+        case 'jag.payment_methods': {
+          const data = await jaguaresService.getPaymentMethodsBreakdown();
+          const view = renderPaymentMethodsBreakdown(data);
+          addChatMessage(chatId, 'user', rawText);
+          addChatMessage(chatId, 'assistant', view.text);
+          await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+          break;
+        }
+
+        case 'jag.whatsapp_templates': {
+          const view = renderWhatsAppTemplatesMenu();
+          addChatMessage(chatId, 'user', rawText);
+          addChatMessage(chatId, 'assistant', view.text);
+          await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+          break;
+        }
+
+        case 'jag.system_health': {
+          const health = await jaguaresService.getSystemHealth();
+          const view = renderSystemHealth(health);
+          addChatMessage(chatId, 'user', rawText);
+          addChatMessage(chatId, 'assistant', view.text);
+          await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
           break;
         }
       }

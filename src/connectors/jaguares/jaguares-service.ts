@@ -19,7 +19,13 @@ import {
   JagBirthdayStudent,
   JagDropoutRiskStudent,
   JagOperationSearchResult,
-  JagRankingStudent
+  JagRankingStudent,
+  JagAttendanceDiscrepancy,
+  JagTodayScheduleItem,
+  JagCapacityAlert,
+  JagMonthlyComparison,
+  JagPaymentMethodBreakdown,
+  JagSystemHealth
 } from '../../contracts/jaguares.js';
 import { ResolvedPeriod } from '../../contracts/date.js';
 
@@ -1188,7 +1194,373 @@ export class JaguaresService {
       total_clases: Number(r.total_clases)
     }));
   }
+
+  /**
+   * 1. Auditoría de inconsistencias: Puerta física (QR) vs toma de asistencia del docente.
+   */
+  async getAttendanceDiscrepancies(fechaTarget?: string): Promise<{ items: JagAttendanceDiscrepancy[]; fechaConsultada: string }> {
+    const tz = 'America/Lima';
+    const now = DateTime.now().setZone(tz);
+    let fecha = fechaTarget || now.toFormat('yyyy-MM-dd');
+
+    // Si no indicaron fecha y hoy aún no tiene asistencias, buscar la última fecha con registros
+    if (!fechaTarget) {
+      const [lastDateRow] = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
+        'SELECT DATE_FORMAT(MAX(fecha), "%Y-%m-%d") AS ult FROM asistencias'
+      );
+      if (lastDateRow?.ult) {
+        fecha = lastDateRow.ult;
+      }
+    }
+
+    const sql = `
+      SELECT 
+        a.alumno_id,
+        a.dni,
+        CONCAT(a.nombres, ' ', a.apellido_paterno, ' ', COALESCE(a.apellido_materno, '')) AS nombre_completo,
+        d.nombre AS deporte,
+        CONCAT(h.dia, ' ', TIME_FORMAT(h.hora_inicio, '%H:%i'), '-', TIME_FORMAT(h.hora_fin, '%H:%i')) AS horario,
+        adm.nombre_completo AS profesor,
+        ast.presente,
+        ast.asistencia_puerta,
+        TIME_FORMAT(ast.hora_puerta, '%H:%i') AS hora_puerta,
+        DATE_FORMAT(ast.fecha, '%Y-%m-%d') AS fecha,
+        COALESCE(a.telefono_apoderado, a.telefono) AS telefono,
+        a.apoderado
+      FROM asistencias ast
+      JOIN alumnos a ON ast.alumno_id = a.alumno_id
+      JOIN horarios h ON ast.horario_id = h.horario_id
+      JOIN deportes d ON h.deporte_id = d.deporte_id
+      LEFT JOIN administradores adm ON ast.registrado_por = adm.admin_id
+      WHERE ast.fecha = ?
+        AND (
+          (ast.presente = 1 AND (ast.asistencia_puerta = 0 OR ast.asistencia_puerta IS NULL))
+          OR
+          (ast.presente = 0 AND ast.asistencia_puerta = 1)
+        )
+      ORDER BY h.hora_inicio, d.nombre, a.apellido_paterno
+    `;
+    const rows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(sql, [fecha]);
+
+    const items: JagAttendanceDiscrepancy[] = rows.map((r) => {
+      const isPuertaSinDocente = Number(r.presente) === 0 && Number(r.asistencia_puerta) === 1;
+      return {
+        alumno_id: Number(r.alumno_id),
+        dni: r.dni,
+        nombre_completo: r.nombre_completo.trim(),
+        deporte: r.deporte,
+        horario: r.horario,
+        profesor: r.profesor || undefined,
+        tipo_discrepancia: isPuertaSinDocente ? 'puerta_sin_docente' : 'docente_sin_puerta',
+        hora_puerta: r.hora_puerta || undefined,
+        fecha: r.fecha,
+        telefono: r.telefono || undefined,
+        apoderado: r.apoderado || undefined
+      };
+    });
+
+    return { items, fechaConsultada: fecha };
+  }
+
+  /**
+   * 2. Agenda de clases y turnos del día de hoy en tiempo real.
+   */
+  async getTodaySchedule(fechaTarget?: string): Promise<{ items: JagTodayScheduleItem[]; diaNombre: string; fechaStr: string }> {
+    const tz = 'America/Lima';
+    const now = DateTime.now().setZone(tz);
+    const dateObj = fechaTarget ? DateTime.fromISO(fechaTarget).setZone(tz) : now;
+    const fechaStr = dateObj.toFormat('yyyy-MM-dd');
+    const DIAS_MAP = ['LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO', 'DOMINGO'];
+    const diaDb = DIAS_MAP[dateObj.weekday - 1];
+    const currentHHmm = now.toFormat('HH:mm');
+
+    const sql = `
+      SELECT 
+        h.horario_id,
+        d.nombre AS deporte,
+        h.categoria,
+        h.dia,
+        TIME_FORMAT(h.hora_inicio, '%H:%i') AS hora_inicio,
+        TIME_FORMAT(h.hora_fin, '%H:%i')     AS hora_fin,
+        h.cupo_maximo,
+        h.cupos_ocupados,
+        GROUP_CONCAT(DISTINCT adm.nombre_completo SEPARATOR ', ') AS profesor,
+        COUNT(ast.asistencia_id) AS total_asistencias_hoy,
+        SUM(CASE WHEN ast.presente = 1 THEN 1 ELSE 0 END) AS total_presentes_hoy,
+        SUM(CASE WHEN ast.asistencia_puerta = 1 THEN 1 ELSE 0 END) AS total_puerta_hoy
+      FROM horarios h
+      JOIN deportes d ON h.deporte_id = d.deporte_id
+      LEFT JOIN profesor_deportes pd ON pd.horario_id = h.horario_id
+      LEFT JOIN administradores adm ON pd.admin_id = adm.admin_id AND adm.estado = 'activo'
+      LEFT JOIN asistencias ast ON ast.horario_id = h.horario_id AND ast.fecha = ?
+      WHERE (UPPER(h.dia) = ? OR UPPER(h.dia) LIKE CONCAT(?, '%'))
+        AND h.estado = 'activo'
+      GROUP BY h.horario_id, d.nombre, h.categoria, h.dia, h.hora_inicio, h.hora_fin, h.cupo_maximo, h.cupos_ocupados
+      ORDER BY h.hora_inicio ASC, d.nombre ASC
+    `;
+    const rows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(sql, [fechaStr, diaDb, diaDb]);
+
+    const items: JagTodayScheduleItem[] = rows.map((r) => {
+      const asistHoy = Number(r.total_asistencias_hoy) || 0;
+      let estado: 'pasada' | 'en_curso' | 'pendiente' = 'pendiente';
+      if (asistHoy > 0) {
+        estado = 'pasada';
+      } else if (fechaStr === now.toFormat('yyyy-MM-dd') && currentHHmm >= r.hora_inicio && currentHHmm <= r.hora_fin) {
+        estado = 'en_curso';
+      }
+
+      return {
+        horario_id: Number(r.horario_id),
+        deporte: r.deporte,
+        categoria: r.categoria || undefined,
+        dia: r.dia,
+        hora_inicio: r.hora_inicio,
+        hora_fin: r.hora_fin,
+        profesor: r.profesor || undefined,
+        cupo_maximo: Number(r.cupo_maximo) || 25,
+        cupos_ocupados: Number(r.cupos_ocupados) || 0,
+        estado_asistencia: estado,
+        total_asistencias_hoy: asistHoy,
+        total_presentes_hoy: Number(r.total_presentes_hoy) || 0,
+        total_puerta_hoy: Number(r.total_puerta_hoy) || 0
+      };
+    });
+
+    return { items, diaNombre: diaDb, fechaStr };
+  }
+
+  /**
+   * 3. Alertas de aforo y horarios con cupos críticos o agotados.
+   */
+  async getCapacityAlerts(): Promise<JagCapacityAlert[]> {
+    const sql = `
+      SELECT 
+        h.horario_id,
+        d.nombre AS deporte,
+        h.categoria,
+        h.dia,
+        TIME_FORMAT(h.hora_inicio, '%H:%i') AS hora_inicio,
+        TIME_FORMAT(h.hora_fin, '%H:%i')     AS hora_fin,
+        h.cupo_maximo,
+        h.cupos_ocupados
+      FROM horarios h
+      JOIN deportes d ON h.deporte_id = d.deporte_id
+      WHERE h.estado = 'activo'
+      ORDER BY (h.cupos_ocupados / GREATEST(h.cupo_maximo, 1)) DESC, h.cupos_ocupados DESC
+    `;
+    const rows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(sql);
+
+    return rows.map((r) => {
+      const max = Number(r.cupo_maximo) || 25;
+      const ocu = Number(r.cupos_ocupados) || 0;
+      const vacantes = Math.max(0, max - ocu);
+      const pct = Math.round((ocu / max) * 100);
+      let nivel: 'lleno' | 'critico' | 'medio' | 'disponible' = 'disponible';
+      if (pct >= 100) nivel = 'lleno';
+      else if (pct >= 85) nivel = 'critico';
+      else if (pct >= 60) nivel = 'medio';
+
+      return {
+        horario_id: Number(r.horario_id),
+        deporte: r.deporte,
+        categoria: r.categoria || undefined,
+        dia: r.dia,
+        hora_inicio: r.hora_inicio,
+        hora_fin: r.hora_fin,
+        cupo_maximo: max,
+        cupos_ocupados: ocu,
+        vacantes_disponibles: vacantes,
+        porcentaje_ocupacion: pct,
+        nivel
+      };
+    });
+  }
+
+  /**
+   * 4. Comparativa de crecimiento de métricas clave mes actual vs mes anterior.
+   */
+  async getMonthlyComparison(): Promise<JagMonthlyComparison> {
+    const tz = 'America/Lima';
+    const now = DateTime.now().setZone(tz);
+    const colYear = getColYear();
+
+    const MESES = [
+      'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+      'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'
+    ];
+    const mesActualStr = MESES[now.month - 1];
+    const anioActual = now.year;
+
+    const prevMonthDate = now.minus({ months: 1 });
+    const mesAnteriorStr = MESES[prevMonthDate.month - 1];
+    const anioAnterior = prevMonthDate.year;
+
+    const [vAct1, vAct2] = getMonthVariants(mesActualStr);
+    const [vAnt1, vAnt2] = getMonthVariants(mesAnteriorStr);
+
+    const sqlPagos = `
+      SELECT 
+        (mes = ? OR mes = ?) AND \`${colYear}\` = ? AS es_actual,
+        SUM(CASE WHEN estado = 'confirmado' OR estado = 'confirmada' THEN monto ELSE 0 END) AS cobrado,
+        SUM(CASE WHEN estado = 'pendiente' THEN monto ELSE 0 END) AS deuda
+      FROM pagos_mensuales
+      WHERE ((mes = ? OR mes = ?) AND \`${colYear}\` = ?)
+         OR ((mes = ? OR mes = ?) AND \`${colYear}\` = ?)
+      GROUP BY es_actual
+    `;
+    const rowsPagos = await executeReadOnlyQuery<mysql.RowDataPacket[]>(sqlPagos, [
+      vAct1, vAct2, anioActual,
+      vAct1, vAct2, anioActual,
+      vAnt1, vAnt2, anioAnterior
+    ]);
+
+    let ingActual = 0, ingAnterior = 0, deudaActual = 0, deudaAnterior = 0;
+    for (const r of rowsPagos) {
+      if (Number(r.es_actual) === 1) {
+        ingActual = Number(r.cobrado) || 0;
+        deudaActual = Number(r.deuda) || 0;
+      } else {
+        ingAnterior = Number(r.cobrado) || 0;
+        deudaAnterior = Number(r.deuda) || 0;
+      }
+    }
+
+    const sqlInscripciones = `
+      SELECT 
+        SUM(CASE WHEN MONTH(fecha_inscripcion) = ? AND YEAR(fecha_inscripcion) = ? THEN 1 ELSE 0 END) AS insc_actual,
+        SUM(CASE WHEN MONTH(fecha_inscripcion) = ? AND YEAR(fecha_inscripcion) = ? THEN 1 ELSE 0 END) AS insc_anterior
+      FROM inscripciones
+      WHERE fecha_inscripcion >= DATE_SUB(CURDATE(), INTERVAL 65 DAY)
+    `;
+    const [rowInsc] = await executeReadOnlyQuery<mysql.RowDataPacket[]>(sqlInscripciones, [
+      now.month, anioActual,
+      prevMonthDate.month, anioAnterior
+    ]);
+    const inscActual = Number(rowInsc?.insc_actual) || 0;
+    const inscAnterior = Number(rowInsc?.insc_anterior) || 0;
+
+    const [rowActivos] = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
+      "SELECT COUNT(*) AS total FROM alumnos WHERE estado = 'activo'"
+    );
+    const activos = Number(rowActivos?.total) || 0;
+
+    const varIngPct = ingAnterior > 0 ? Math.round(((ingActual - ingAnterior) / ingAnterior) * 100) : 0;
+    const varInscPct = inscAnterior > 0 ? Math.round(((inscActual - inscAnterior) / inscAnterior) * 100) : 0;
+
+    return {
+      mes_actual: mesActualStr.toUpperCase(),
+      anio_actual: anioActual,
+      mes_anterior: mesAnteriorStr.toUpperCase(),
+      anio_anterior: anioAnterior,
+      ingresos_actual: ingActual,
+      ingresos_anterior: ingAnterior,
+      variacion_ingresos_pct: varIngPct,
+      inscripciones_actual: inscActual,
+      inscripciones_anterior: inscAnterior,
+      variacion_inscripciones_pct: varInscPct,
+      alumnos_activos: activos,
+      deuda_actual: deudaActual,
+      deuda_anterior: deudaAnterior
+    };
+  }
+
+  /**
+   * 5. Desglose financiero por método de pago (Yape, Plin, Transferencia, Efectivo).
+   */
+  async getPaymentMethodsBreakdown(mesFilter?: number, anioFilter?: number): Promise<{ methods: JagPaymentMethodBreakdown[]; totalMonto: number; totalPagos: number; mesNombre: string }> {
+    const tz = 'America/Lima';
+    const now = DateTime.now().setZone(tz);
+    const mes = mesFilter || now.month;
+    const anio = anioFilter || now.year;
+    const MESES = [
+      'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+      'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+    ];
+    const colYear = getColYear();
+
+    const sql = `
+      SELECT 
+        COALESCE(NULLIF(TRIM(metodo_pago), ''), 'Yape / Plin') AS metodo,
+        SUM(monto) AS total_monto,
+        COUNT(*) AS cantidad_pagos
+      FROM pagos_mensuales
+      WHERE (estado = 'confirmado' OR estado = 'confirmada')
+        AND (
+          (fecha_pago IS NOT NULL AND MONTH(fecha_pago) = ? AND YEAR(fecha_pago) = ?)
+          OR
+          (fecha_pago IS NULL AND \`${colYear}\` = ?)
+        )
+      GROUP BY metodo
+      ORDER BY total_monto DESC
+    `;
+    const rows = await executeReadOnlyQuery<mysql.RowDataPacket[]>(sql, [mes, anio, anio]);
+
+    let grandTotalMonto = 0;
+    let grandTotalPagos = 0;
+    for (const r of rows) {
+      grandTotalMonto += Number(r.total_monto) || 0;
+      grandTotalPagos += Number(r.cantidad_pagos) || 0;
+    }
+
+    const methods: JagPaymentMethodBreakdown[] = rows.map((r) => {
+      const monto = Number(r.total_monto) || 0;
+      const cant = Number(r.cantidad_pagos) || 0;
+      const pct = grandTotalMonto > 0 ? Math.round((monto / grandTotalMonto) * 100) : 0;
+      return {
+        metodo: r.metodo,
+        total_monto: monto,
+        cantidad_pagos: cant,
+        porcentaje_total: pct
+      };
+    });
+
+    return {
+      methods,
+      totalMonto: grandTotalMonto,
+      totalPagos: grandTotalPagos,
+      mesNombre: `${MESES[mes - 1]} ${anio}`
+    };
+  }
+
+  /**
+   * 6. Panel de salud técnica del bot y MySQL.
+   */
+  async getSystemHealth(): Promise<JagSystemHealth> {
+    const startPing = Date.now();
+    let dbStatus: 'online' | 'error' = 'online';
+    let latency = 0;
+    try {
+      await executeReadOnlyQuery('SELECT 1');
+      latency = Date.now() - startPing;
+    } catch {
+      dbStatus = 'error';
+    }
+
+    const [rowAlumnos] = await executeReadOnlyQuery<mysql.RowDataPacket[]>('SELECT COUNT(*) AS total FROM alumnos');
+    const [rowInsc] = await executeReadOnlyQuery<mysql.RowDataPacket[]>("SELECT COUNT(*) AS total FROM inscripciones WHERE estado = 'activa' OR estado = 'activo'");
+    const [rowHor] = await executeReadOnlyQuery<mysql.RowDataPacket[]>("SELECT COUNT(*) AS total FROM horarios WHERE estado = 'activo'");
+    const [rowLastPago] = await executeReadOnlyQuery<mysql.RowDataPacket[]>(
+      "SELECT DATE_FORMAT(MAX(fecha_pago), '%d/%m/%Y %H:%i') AS ult FROM pagos_mensuales WHERE comprobante_url IS NOT NULL AND TRIM(comprobante_url) != ''"
+    );
+
+    const tz = 'America/Lima';
+    const serverTime = DateTime.now().setZone(tz).toFormat('dd/MM/yyyy hh:mm:ss a');
+
+    return {
+      db_status: dbStatus,
+      db_latency_ms: latency,
+      total_alumnos: Number(rowAlumnos?.total) || 0,
+      total_inscripciones_activas: Number(rowInsc?.total) || 0,
+      total_horarios_activos: Number(rowHor?.total) || 0,
+      watcher_status: 'Activo (cada 60 s)',
+      last_payment_date: rowLastPago?.ult || undefined,
+      cached_queries: 0,
+      uptime_seconds: Math.floor(process.uptime()),
+      server_time: serverTime
+    };
+  }
 }
 
 export const jaguaresService = new JaguaresService();
+
 

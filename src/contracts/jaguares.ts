@@ -273,4 +273,91 @@ export interface JagRankingStudent {
   total_clases: number;
 }
 
+/** Discrepancia entre registro de puerta física (QR) y docente */
+export interface JagAttendanceDiscrepancy {
+  alumno_id: number;
+  dni: string;
+  nombre_completo: string;
+  deporte: string;
+  horario: string;
+  profesor?: string;
+  tipo_discrepancia: 'puerta_sin_docente' | 'docente_sin_puerta';
+  hora_puerta?: string;
+  fecha: string;
+  telefono?: string;
+  apoderado?: string;
+}
+
+/** Turno o clase de la agenda del día de hoy */
+export interface JagTodayScheduleItem {
+  horario_id: number;
+  deporte: string;
+  categoria?: string;
+  dia: string;
+  hora_inicio: string; // HH:mm
+  hora_fin: string;    // HH:mm
+  profesor?: string;
+  cupo_maximo: number;
+  cupos_ocupados: number;
+  estado_asistencia: 'pasada' | 'en_curso' | 'pendiente';
+  total_asistencias_hoy: number;
+  total_presentes_hoy: number;
+  total_puerta_hoy: number;
+}
+
+/** Alerta de aforo o cupo crítico por horario */
+export interface JagCapacityAlert {
+  horario_id: number;
+  deporte: string;
+  categoria?: string;
+  dia: string;
+  hora_inicio: string;
+  hora_fin: string;
+  cupo_maximo: number;
+  cupos_ocupados: number;
+  vacantes_disponibles: number;
+  porcentaje_ocupacion: number;
+  nivel: 'lleno' | 'critico' | 'medio' | 'disponible';
+}
+
+/** Comparativa de métricas clave mes actual vs mes anterior */
+export interface JagMonthlyComparison {
+  mes_actual: string;
+  anio_actual: number;
+  mes_anterior: string;
+  anio_anterior: number;
+  ingresos_actual: number;
+  ingresos_anterior: number;
+  variacion_ingresos_pct: number;
+  inscripciones_actual: number;
+  inscripciones_anterior: number;
+  variacion_inscripciones_pct: number;
+  alumnos_activos: number;
+  deuda_actual: number;
+  deuda_anterior: number;
+}
+
+/** Desglose de ingresos por método de pago */
+export interface JagPaymentMethodBreakdown {
+  metodo: string;
+  total_monto: number;
+  cantidad_pagos: number;
+  porcentaje_total: number;
+}
+
+/** Diagnóstico de salud y operatividad técnica del bot y MySQL */
+export interface JagSystemHealth {
+  db_status: 'online' | 'error';
+  db_latency_ms: number;
+  total_alumnos: number;
+  total_inscripciones_activas: number;
+  total_horarios_activos: number;
+  watcher_status: string;
+  last_payment_date?: string;
+  cached_queries: number;
+  uptime_seconds: number;
+  server_time: string;
+}
+
+
 
