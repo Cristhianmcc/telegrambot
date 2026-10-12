@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard, InputFile } from 'grammy';
+import { Bot, InlineKeyboard, InputFile, Keyboard } from 'grammy';
 import { DateTime } from 'luxon';
 import { routeMessage } from '../pipeline/rule-router.js';
 import { routeMessageWithLLM } from '../llm/llm-router.js';
@@ -37,6 +37,27 @@ import {
   generateAttendanceExcelBuffer
 } from '../reporting/excel-generator.js';
 import { sendDailyDigestToUser } from '../scheduler/daily-digest.js';
+
+interface UserSession {
+  state?: 'AWAITING_STUDENT_SEARCH' | 'AWAITING_ATTENDANCE_DNI' | 'AWAITING_OP_SEARCH';
+  timestamp: number;
+}
+const userSessions = new Map<number, UserSession>();
+const SESSION_TTL_MS = 5 * 60 * 1000; // 5 minutos de espera para el wizard
+
+/**
+ * Teclado persistente en la barra inferior de Telegram (ahorra tokens: 0 tokens por clic)
+ */
+export function getPersistentReplyKeyboard(): Keyboard {
+  return new Keyboard()
+    .text('🎓 Resumen').text('💰 Ingresos').text('👥 Alumnos')
+    .row()
+    .text('🎂 Cumpleaños').text('📉 Deserción').text('🏆 Ranking')
+    .row()
+    .text('👨‍🏫 Docentes').text('📥 Excel').text('🔍 Buscar Alumno')
+    .resized()
+    .persistent();
+}
 
 export const BOT_SLASH_COMMANDS = [
   { command: 'menu', description: '📋 Menú interactivo principal' },
@@ -479,7 +500,11 @@ export function createBot(token: string): Bot {
         .row()
         .text('👑 Panel Administrador Maestro', 'saas_back');
     }
-    await ctx.reply('📋 <b>Menú de Consultas Rápidas</b>', {
+    await ctx.reply('📱 <i>Accesos rápidos activos en tu teclado.</i>', {
+      parse_mode: 'HTML',
+      reply_markup: getPersistentReplyKeyboard()
+    });
+    await ctx.reply('📋 <b>Menú de Consultas Rápidas · Escuela Jaguares</b>', {
       parse_mode: 'HTML',
       reply_markup: kb
     });
@@ -820,10 +845,11 @@ export function createBot(token: string): Bot {
 
   bot.callbackQuery('action_prompt_search', async (ctx) => {
     await ctx.answerCallbackQuery();
+    userSessions.set(ctx.from.id, { state: 'AWAITING_STUDENT_SEARCH', timestamp: Date.now() });
     await ctx.reply(
-      `🔍 <b>Búsqueda de Alumnos</b>\n\n` +
-        `Escribe el nombre, apellido o DNI del alumno.\n` +
-        `Ejemplo: <code>/buscar Huamani</code> o simplemente escribe <code>74859612</code>`,
+      `🔍 <b>Búsqueda Rápida de Alumnos</b>\n\n` +
+        `Escribe el <b>apellido, nombre o DNI</b> del alumno a buscar:\n\n` +
+        `<i>(O escribe /cancelar para salir)</i>`,
       { parse_mode: 'HTML' }
     );
   });
@@ -836,10 +862,11 @@ export function createBot(token: string): Bot {
   // --- CALLBACK BOTÓN MENÚ → ASISTENCIAS (pide DNI) ---
   bot.callbackQuery('action_prompt_asistencias', async (ctx) => {
     await ctx.answerCallbackQuery();
+    userSessions.set(ctx.from.id, { state: 'AWAITING_ATTENDANCE_DNI', timestamp: Date.now() });
     await ctx.reply(
       `📅 <b>Historial de Asistencias</b>\n\n` +
-      `Escribe el DNI del alumno (8 dígitos):\n` +
-      `Ejemplo: <code>/asistencias 74859612</code>`,
+      `Escribe el <b>DNI de 8 dígitos</b> del alumno:\n\n` +
+      `<i>(O escribe /cancelar para salir)</i>`,
       { parse_mode: 'HTML' }
     );
   });
@@ -1182,6 +1209,102 @@ export function createBot(token: string): Bot {
     const history = getChatHistory(chatId);
 
     const norm = rawText.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const userId = ctx.from?.id;
+
+    // 0. Wizard interactivo de búsqueda y estados de sesión (0 tokens)
+    if (userId && userSessions.has(userId)) {
+      const session = userSessions.get(userId)!;
+      if (Date.now() - session.timestamp < SESSION_TTL_MS) {
+        if (norm === 'cancelar' || norm === '/cancelar') {
+          userSessions.delete(userId);
+          await ctx.reply('❌ Búsqueda cancelada.');
+          return;
+        }
+
+        if (session.state === 'AWAITING_STUDENT_SEARCH') {
+          userSessions.delete(userId);
+          await handleStudentSearch(ctx, rawText);
+          return;
+        }
+
+        if (session.state === 'AWAITING_ATTENDANCE_DNI') {
+          userSessions.delete(userId);
+          const cleanDni = rawText.replace(/\D/g, '');
+          if (cleanDni.length === 8) {
+            const data = await jaguaresService.getAsistenciasAlumno(cleanDni);
+            if (!data) {
+              await ctx.reply(`⚠️ No se encontró ningún alumno con DNI <code>${escapeHtml(cleanDni)}</code>.`, { parse_mode: 'HTML' });
+            } else {
+              const view = renderAsistenciasAlumno(data, 0);
+              await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+            }
+            return;
+          }
+        }
+      } else {
+        userSessions.delete(userId);
+      }
+    }
+
+    // 0b. Botones directos del Reply Keyboard inferior persistente (0 tokens)
+    if (rawText === '🎓 Resumen' || rawText === 'Resumen') {
+      const period = resolvePeriod('este mes');
+      const data = await jaguaresService.getOverview(period);
+      await ctx.reply(renderOverview(data, period.label), { parse_mode: 'HTML' });
+      return;
+    }
+    if (rawText === '💰 Ingresos' || rawText === 'Ingresos') {
+      const period = resolvePeriod('este mes');
+      const data = await jaguaresService.getIncomeSummary(period);
+      await ctx.reply(renderIncomeSummary(data), { parse_mode: 'HTML' });
+      return;
+    }
+    if (rawText === '👥 Alumnos' || rawText === 'Alumnos') {
+      const data = await jaguaresService.getStudentCounts();
+      await ctx.reply(renderStudentCounts(data), { parse_mode: 'HTML' });
+      return;
+    }
+    if (rawText === '🎂 Cumpleaños' || rawText === 'Cumpleaños') {
+      const data = await jaguaresService.getBirthdays('hoy');
+      const view = renderBirthdays(data, 'hoy');
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+      return;
+    }
+    if (rawText === '📉 Deserción' || rawText === 'Deserción') {
+      const data = await jaguaresService.getDropoutRisk();
+      const view = renderDropoutRisk(data);
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+      return;
+    }
+    if (rawText === '🏆 Ranking' || rawText === 'Ranking') {
+      const data = await jaguaresService.getStudentRanking();
+      const view = renderRanking(data, 'Ranking de Alumnos');
+      await ctx.reply(view, { parse_mode: 'HTML' });
+      return;
+    }
+    if (rawText === '👨‍🏫 Docentes' || rawText === 'Docentes') {
+      const data = await jaguaresService.getDocentesControl();
+      const view = renderDocentesControl(data);
+      await ctx.reply(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
+      return;
+    }
+    if (rawText === '📥 Excel' || rawText === 'Excel') {
+      await ctx.reply('📊 <b>Descargas en Excel (.xlsx)</b>\n¿Cuál de estos reportes deseas descargar?', {
+        parse_mode: 'HTML',
+        reply_markup: getExcelKeyboard()
+      });
+      return;
+    }
+    if (rawText === '🔍 Buscar Alumno' || rawText === 'Buscar Alumno') {
+      if (userId) userSessions.set(userId, { state: 'AWAITING_STUDENT_SEARCH', timestamp: Date.now() });
+      await ctx.reply(
+        `🔍 <b>Búsqueda Rápida de Alumnos</b>\n\n` +
+        `Escribe el <b>apellido, nombre o DNI</b> del alumno a buscar:\n\n` +
+        `<i>(O escribe /cancelar para salir)</i>`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
 
     // 1. DNI directo (8 dígitos)
     if (/^\d{8}$/.test(rawText)) {

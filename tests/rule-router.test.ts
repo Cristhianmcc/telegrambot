@@ -97,4 +97,22 @@ describe('RuleRouter for Jaguares', () => {
     expect(match?.intent).toBe('jag.asistencias_dni');
     expect(match?.slots.dni).toBe('72819203');
   });
+
+  it('soporta errores tipográficos leves (fuzzy matching) sin gastar tokens', () => {
+    // "cuanto cobramo" sin 's'
+    const m1 = routeMessage('cuanto cobramo este mes');
+    expect(m1?.intent).toBe('jag.income_summary');
+
+    // "cuanto ingres"
+    const m2 = routeMessage('cuanto ingres hoy');
+    expect(m2?.intent).toBe('jag.income_summary');
+
+    // "quien debe" en singular
+    const m3 = routeMessage('quien debe este mes');
+    expect(m3?.intent).toBe('jag.pending_payments');
+
+    // "cupo" singular con puntuación
+    const m4 = routeMessage('¿cupo en futbol?');
+    expect(m4?.intent).toBe('jag.capacity');
+  });
 });

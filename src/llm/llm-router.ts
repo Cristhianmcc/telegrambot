@@ -40,142 +40,16 @@ const TOOLS_DEFINITIONS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'jag_overview',
-      description: 'Resumen ejecutivo de la escuela deportiva: alumnos activos, nuevos del mes, ingresos confirmados, deuda pendiente y disciplina top.',
-      parameters: {
-        type: 'object',
-        properties: {
-          period: {
-            type: 'string',
-            description: 'Expresión de fecha o mes si la indicó, ej: "este mes", "septiembre".'
-          }
-        }
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'jag_student_counts',
-      description: 'Cantidad de alumnos de la escuela: total, activos, inactivos o filtrados por una disciplina específica (fútbol, vóley, etc.).',
-      parameters: {
-        type: 'object',
-        properties: {
-          discipline: {
-            type: 'string',
-            description: 'Nombre de la disciplina deportiva si se especificó (ej: Fútbol, Vóley, Básquet).'
-          }
-        }
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'jag_income_summary',
-      description: 'Ingresos y dinero cobrado o recaudado por concepto de pagos y mensualidades en un período.',
-      parameters: {
-        type: 'object',
-        properties: {
-          period: {
-            type: 'string',
-            description: 'Expresión de fecha o período, ej: "este mes", "septiembre", "hoy", "el mes pasado".'
-          }
-        }
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'jag_debt_summary',
-      description: 'Deudas, dinero pendiente de cobro, mensualidades sin pagar o cobranzas pendientes de la escuela.',
-      parameters: {
-        type: 'object',
-        properties: {
-          period: {
-            type: 'string',
-            description: 'Expresión de fecha o mes para calcular la deuda, ej: "este mes", "septiembre".'
-          }
-        }
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'jag_pending_payments',
-      description: 'Listado con nombres y montos de los alumnos que deben mensualidades o tienen comprobantes pendientes de verificación.',
-      parameters: {
-        type: 'object',
-        properties: {
-          period: {
-            type: 'string',
-            description: 'Mes o período para listar deudores, ej: "este mes", "septiembre".'
-          }
-        }
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'jag_enrollments',
-      description: 'Nuevos alumnos que ingresaron, nuevas inscripciones o matrículas en un período de tiempo.',
-      parameters: {
-        type: 'object',
-        properties: {
-          period: {
-            type: 'string',
-            description: 'Período temporal, ej: "este mes", "esta semana", "septiembre".'
-          }
-        }
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'jag_capacity',
-      description: 'Capacidad de horarios, cupos máximos, cupos ocupados y vacantes disponibles en los horarios de entrenamiento.',
-      parameters: {
-        type: 'object',
-        properties: {
-          discipline: {
-            type: 'string',
-            description: 'Disciplina deportiva si se especificó (ej: Fútbol, Vóley).'
-          }
-        }
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'jag_recent_students',
-      description: 'Consultar el alumno más reciente, quién es el más nuevo, o ver los últimos alumnos inscritos en la escuela.',
-      parameters: {
-        type: 'object',
-        properties: {
-          limit: {
-            type: 'number',
-            description: 'Cantidad de alumnos a mostrar (por defecto 5).'
-          }
-        }
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
       name: 'jag_sql_query',
-      description: 'Ejecuta una consulta SQL SELECT de solo lectura en la base de datos de Jaguares para responder cualquier pregunta analítica, comparativa o ad-hoc sobre alumnos, deportes, horarios, inscripciones, asistencias, docentes que pasaron lista o pagos que no cubran las herramientas fijas.',
+      description:
+        'Ejecuta una consulta SQL SELECT de solo lectura en MySQL para responder preguntas sobre alumnos, deportes, horarios, inscripciones, asistencias, control de docentes o pagos.',
       parameters: {
         type: 'object',
         properties: {
           sql: {
             type: 'string',
-            description: 'Consulta SQL SELECT pura. Solo SELECT está permitido. Tablas: alumnos, deportes, horarios, inscripciones, inscripcion_horarios, asistencias, administradores, profesor_deportes, pagos_mensuales.'
+            description:
+              'Consulta SQL SELECT de solo lectura. Tablas disponibles: alumnos, deportes, horarios, inscripciones, inscripcion_horarios, asistencias, administradores, profesor_deportes, pagos_mensuales.'
           }
         },
         required: ['sql']
@@ -186,7 +60,7 @@ const TOOLS_DEFINITIONS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'out_of_scope',
-      description: 'Usar cuando la pregunta del usuario no tiene ninguna relación con la escuela deportiva ni sus métricas de negocio.',
+      description: 'Usar cuando la pregunta del usuario no tiene relación con la Escuela Deportiva Jaguares ni sus datos o métricas.',
       parameters: {
         type: 'object',
         properties: {
@@ -211,7 +85,7 @@ interface CacheEntry {
   expiresAt: number;
 }
 const llmResponseCache = new Map<string, CacheEntry>();
-const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutos
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos (ahorro de tokens en preguntas repetidas)
 
 /**
  * Enruta un mensaje usando LLM (DeepSeek / OpenAI) con soporte para llamadas a funciones
@@ -460,7 +334,7 @@ export async function routeMessageWithLLM(
         return null;
       }
 
-      // Si es la primera iteración y llamó a una tool predefinida de métricas (no SQL libre)
+      // Si es la primera iteración y llamó a out_of_scope
       if (iteration === 1 && !toolCalls.some((c: any) => c.function?.name === 'jag_sql_query')) {
         const firstCall = toolCalls[0] as any;
         const fnName = firstCall?.function?.name;
@@ -472,38 +346,6 @@ export async function routeMessageWithLLM(
               rawText: userText,
               directResponse:
                 'Esa pregunta está fuera del alcance de mi función. Soy el asistente virtual de la <b>Escuela Deportiva Jaguares</b> y estoy especializado en responderte sobre los alumnos, horarios, cobranzas, deudas y métricas de la escuela.\n\nSi necesitas consultar cualquier dato de Jaguares, ¡con gusto te ayudo! 🐆'
-            }
-          };
-        }
-
-        const intentMap: Record<string, JaguaresIntent> = {
-          jag_overview: 'jag.overview',
-          jag_student_counts: 'jag.student_counts',
-          jag_income_summary: 'jag.income_summary',
-          jag_debt_summary: 'jag.debt_summary',
-          jag_pending_payments: 'jag.pending_payments',
-          jag_enrollments: 'jag.enrollments',
-          jag_recent_students: 'jag.recent_students',
-          jag_capacity: 'jag.capacity'
-        };
-
-        const intent = intentMap[fnName];
-        if (intent) {
-          let args: any = {};
-          try {
-            args = JSON.parse(firstCall?.function?.arguments || '{}');
-          } catch {
-            args = {};
-          }
-          const periodStr = args.period || 'este mes';
-          const resolvedPeriod = resolvePeriod(periodStr, options);
-          return {
-            intent,
-            confidence: 0.95,
-            slots: {
-              period: resolvedPeriod,
-              discipline: args.discipline,
-              rawText: userText
             }
           };
         }

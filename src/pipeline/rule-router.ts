@@ -42,6 +42,8 @@ function cleanText(text: string): string {
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s/]/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
@@ -107,7 +109,8 @@ export function routeMessage(rawText: string, options: { now?: Date; timezone?: 
     text === 'resumen' ||
     text === 'resumen general' ||
     text === 'estado de la escuela' ||
-    text === '/resumen'
+    text === '/resumen' ||
+    /^(?:ver\s+)?resumen(?:\s+general)?$/i.test(text)
   ) {
     const period = resolvePeriod('este mes', options);
     return {
@@ -117,13 +120,9 @@ export function routeMessage(rawText: string, options: { now?: Date; timezone?: 
     };
   }
 
-  // 3. Deudores específicos / "¿Quiénes deben?"
+  // 3. Deudores específicos / "¿Quiénes deben?" (con tolerancia a faltas tipográficas)
   if (
-    text.includes('quienes deben') ||
-    text.includes('lista de deudores') ||
-    text.includes('alumnos que deben') ||
-    text.includes('que alumnos deben') ||
-    text.includes('quien debe') ||
+    /(?:quienes?\s+deben?|lista.*deudor|alumnos?\s+que\s+deben?|que\s+alumnos?\s+deben?|quien.*debe|morosos?)/i.test(text) ||
     text === '/deudores'
   ) {
     const period = resolvePeriod(rawText, options);
@@ -136,12 +135,7 @@ export function routeMessage(rawText: string, options: { now?: Date; timezone?: 
 
   // 4. Deudas y cobranzas totales / "¿Cuánto nos deben?"
   if (
-    text.includes('cuanto nos deben') ||
-    text.includes('cuanto falta cobrar') ||
-    text.includes('cuanto se debe') ||
-    text.includes('deudas') ||
-    text.includes('pagos pendientes') ||
-    text.includes('falta por cobrar') ||
+    /(?:cuanto\s+(?:nos\s+)?deben|cuanto\s+falta(?:\s+por)?\s+cobr|cuanto\s+se\s+debe|deudas?|pagos?\s+pendientes?|falta\s+por\s+cobrar)/i.test(text) ||
     text === '/deudas'
   ) {
     const period = resolvePeriod(rawText, options);
@@ -152,14 +146,9 @@ export function routeMessage(rawText: string, options: { now?: Date; timezone?: 
     };
   }
 
-  // 5. Ingresos / Cobros / "¿Cuánto hemos cobrado?"
+  // 5. Ingresos / Cobros / "¿Cuánto hemos cobrado?" (con tolerancia a faltas tipográficas: cobramo, ingres, etc.)
   if (
-    text.includes('cuanto hemos cobrado') ||
-    text.includes('cuanto cobramos') ||
-    text.includes('cuanto ingres') ||
-    text.includes('ingresos') ||
-    text.includes('total cobrado') ||
-    text.includes('recaudado')
+    /(?:cuanto\s+(?:hemos\s+)?cobr|cuanto\s+ingres|ingresos?|total\s+cobr|recaudad|cuanto\s+se\s+cobr)/i.test(text)
   ) {
     const period = resolvePeriod(rawText, options);
     return {
@@ -205,10 +194,7 @@ export function routeMessage(rawText: string, options: { now?: Date; timezone?: 
 
   // 7. Capacidad / Cupos / Ocupación
   if (
-    text.includes('cupo') ||
-    text.includes('capacidad') ||
-    text.includes('ocupacion') ||
-    text.includes('horarios disponibles')
+    /(?:cupos?|capacidad|ocupacion|horarios?\s+disponibles?|vacantes?)/i.test(text)
   ) {
     const discipline = extractDiscipline(rawText);
     return {
@@ -220,13 +206,7 @@ export function routeMessage(rawText: string, options: { now?: Date; timezone?: 
 
   // 8. Conteo de alumnos / Por disciplina
   if (
-    text.includes('cuantos alumnos') ||
-    text.includes('total de alumnos') ||
-    text.includes('alumnos activos') ||
-    text.includes('alumnos por disciplina') ||
-    text.includes('alumnos tiene') ||
-    text.includes('alumnos hay') ||
-    text === 'alumnos'
+    /(?:cuantos?\s+alumnos?|total\s+de\s+alumnos?|alumnos?\s+activos?|alumnos?\s+por\s+disciplina|alumnos?\s+tiene|alumnos?\s+hay|^alumnos?$)/i.test(text)
   ) {
     const discipline = extractDiscipline(rawText);
     return {
@@ -238,12 +218,7 @@ export function routeMessage(rawText: string, options: { now?: Date; timezone?: 
 
   // 9. Cumpleaños de alumnos (0 tokens)
   if (
-    text.includes('cumplean') ||
-    text.includes('cumpleanero') ||
-    text.includes('quien cumple') ||
-    text.includes('quienes cumplen') ||
-    text === '/cumpleanos' ||
-    text === '/cumple'
+    /(?:cumplean|cumpleanero|quien.*cumple|quienes.*cumplen|^\/cumpleanos?$|^\/cumple$)/i.test(text)
   ) {
     let birthdayPeriod: 'hoy' | 'semana' | 'mes' = 'hoy';
     if (text.includes('semana')) birthdayPeriod = 'semana';
@@ -257,15 +232,7 @@ export function routeMessage(rawText: string, options: { now?: Date; timezone?: 
 
   // 10. Alerta de deserción / Faltas críticas (0 tokens)
   if (
-    text.includes('desercion') ||
-    text.includes('alumnos en riesgo') ||
-    text.includes('riesgo de desercion') ||
-    text.includes('muchas faltas') ||
-    text.includes('faltas consecutivas') ||
-    text.includes('quienes faltan mucho') ||
-    text.includes('inasistencias criticas') ||
-    text === '/desercion' ||
-    text === '/faltas'
+    /(?:desercion|alumnos?\s+en\s+riesgo|riesgo.*desercion|muchas?\s+faltas?|faltas?\s+consecutivas?|quienes?\s+faltan\s+mucho|inasistencias?\s+criticas?|^\/desercion$|^\/faltas?$)/i.test(text)
   ) {
     return {
       intent: 'jag.dropout_risk',
@@ -276,15 +243,9 @@ export function routeMessage(rawText: string, options: { now?: Date; timezone?: 
 
   // 11. Ranking y Alumnos destacados (0 tokens)
   if (
-    text.includes('ranking') ||
-    text.includes('top alumnos') ||
-    text.includes('mejores alumnos') ||
-    text.includes('alumnos destacados') ||
-    text.includes('asistencia perfecta') ||
-    text.includes('100% asistencia') ||
-    text === '/ranking'
+    /(?:ranking|top\s+alumnos?|mejores?\s+alumnos?|alumnos?\s+destacados?|asistencia\s+perfecta|100%\s+asistencia|^\/ranking$)/i.test(text)
   ) {
-    const rankingFilter = (text.includes('perfect') || text.includes('100%')) ? 'perfect' : 'top';
+    const rankingFilter = (text.includes('perfect') || text.includes('100')) ? 'perfect' : 'top';
     return {
       intent: 'jag.ranking',
       confidence: 0.98,
@@ -294,15 +255,7 @@ export function routeMessage(rawText: string, options: { now?: Date; timezone?: 
 
   // 12. Control de docentes / Quién pasó lista (0 tokens)
   if (
-    text.includes('pasaron lista') ||
-    text.includes('paso lista') ||
-    text.includes('pasaron asistencia') ||
-    text.includes('paso asistencia') ||
-    text.includes('control de docentes') ||
-    text.includes('control docentes') ||
-    text.includes('control profesores') ||
-    text === '/docentes' ||
-    text === '/profesores'
+    /(?:pasaron\s+lista|paso\s+lista|pasaron\s+asistencia|paso\s+asistencia|control\s+de\s+docentes?|control\s+docentes?|control\s+profesores?|^\/docentes?$|^\/profesores?$)/i.test(text)
   ) {
     let targetFecha: string | undefined = undefined;
     if (text.includes('ayer')) {
